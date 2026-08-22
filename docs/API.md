@@ -1,193 +1,203 @@
 # Gateway API
 
-The gateway presents a small OpenAI-compatible surface plus local administration and memory APIs.
-All endpoints except liveness, readiness, and metrics require:
+Agent UI exposes an authenticated OpenAI-compatible gateway plus read-only setup and routing inspection endpoints.
+
+## Authentication
+
+All routes except health and metrics require:
 
 ```http
 Authorization: Bearer <GATEWAY_API_KEY>
 ```
 
-## OpenAI-compatible endpoints
-
-### `GET /v1/models`
-
-Returns advertised virtual profiles. Initial profiles:
-
-- `assistant`
-- `assistant-fast`
-- `assistant-deep`
-- `storyteller`
-- `auto`
-
-The response metadata includes the selected route type and concrete backend where applicable.
-
-### `POST /v1/chat/completions`
-
-Supports streamed and non-streamed chat-completion requests. The gateway preserves unknown
-llama.cpp-compatible request fields, applies profile defaults only when the client did not supply a
-value, and rewrites the backend `model` before proxying.
-
-Minimal request:
-
-```json
-{
-  "model": "assistant",
-  "messages": [
-    {"role": "user", "content": "Explain why this VLAN cannot see mDNS traffic."}
-  ],
-  "stream": true
-}
-```
-
-Automatic routing:
-
-```json
-{
-  "model": "auto",
-  "messages": [
-    {"role": "user", "content": "Continue our campaign scene aboard the cruiser."}
-  ]
-}
-```
-
-Response headers:
-
-| Header | Meaning |
-|---|---|
-| `X-Local-AI-Profile` | Resolved virtual profile |
-| `X-Local-AI-Backend-Model` | Concrete llama.cpp model alias |
-| `X-Local-AI-Route-Reason` | Deterministic routing explanation |
-
-### Routing overrides
-
-Use one of:
-
-- model `assistant` or `storyteller`;
-- model `auto` with a latest-user-message prefix `/assistant` or `/story`;
-- `X-Local-AI-Profile: <profile-id>`;
-- a configured direct backend alias for diagnostics or Hermes.
-
-Header override is intended for trusted clients. Do not expose arbitrary profile override to
-untrusted multi-user clients without policy checks.
-
-### Reasoning effort
-
-For GPT-OSS profiles:
-
-```http
-X-Reasoning-Effort: low|medium|high
-```
-
-or a JSON field:
-
-```json
-{"reasoning_effort": "high"}
-```
-
-The gateway validates the value and forwards it as the native OpenAI-compatible
-`reasoning_effort` field supported by the selected llama.cpp GPT-OSS template. Header wins over
-JSON, which wins over the profile default. For GPT-OSS, local profile instructions, client
-system/developer instructions, and retrieved memory are consolidated into one leading developer
-message so none of those sections is discarded by the Harmony prompt template.
-
-## Local APIs
-
-### `POST /api/routes/preview`
-
-Resolves a request without calling the model. Useful for routing evaluation.
-
-```json
-{
-  "model": "auto",
-  "messages": [{"role": "user", "content": "Write a scene in the engine room."}]
-}
-```
-
-Returns profile, backend, and route reason.
-
-### `GET /api/models/status`
-
-Returns llama.cpp router model states such as `loaded`, `unloaded`, `loading`, `sleeping`, or a
-failed state. This endpoint is diagnostic and may be unavailable in fixed-model fallback mode.
-
-### `POST /api/admin/reload-profiles`
-
-Reloads and validates the configured profile document without restarting the process. The standard
-Docker deployment reads `/runtime/profiles.json`. Existing in-flight requests
-continue with their already-resolved profile.
-
-### `POST /api/memories`
-
-Creates an explicit durable memory.
-
-```json
-{
-  "namespace": "infrastructure",
-  "content": "The barn UCS has one Tesla T4 with 16 GB VRAM.",
-  "source": "manual",
-  "importance": 0.8,
-  "metadata": {"host": "ucs"}
-}
-```
-
-The authenticated deployment is currently single-user and uses `DEFAULT_USER_ID` unless the
-trusted client supplies an allowed user header. Multi-user identity federation is a later phase.
-
-### `GET /api/memories/search`
-
-Query parameters:
-
-| Parameter | Required | Description |
-|---|---:|---|
-| `q` | yes | Full-text query |
-| `namespace` | no, repeatable | Restrict retrieval namespaces |
-| `limit` | no | Result count within configured cap |
-
-Example:
+## OpenAI-compatible routes
 
 ```text
-/api/memories/search?q=Tesla%20T4&namespace=infrastructure&limit=5
+GET  /v1/models
+POST /v1/chat/completions
+POST /v1/responses
+POST /v1/completions
+POST /infill
+POST /v1/infill
+POST /v1/embeddings
+POST /v1/rerank
+POST /v1/reranking
+POST /v1/images/generations
 ```
 
-### `GET /health/live`
+Requests use either an experience ID such as `chat` or a directly registered model ID in the `model` field.
 
-Process liveness only.
+## Control headers
 
-### `GET /health/ready`
+| Header | Purpose |
+|---|---|
+| `X-Agent-UI-Experience` | Override the request's selected experience. |
+| `X-Agent-UI-User` | Stable user identity for memory isolation. |
+| `X-Agent-UI-Memory-Namespace` | Add one approved namespace to retrieval. |
+| `X-Reasoning-Effort` | Select a declared model-specific effort mapping. |
+| `X-Request-ID` | Supply a request correlation ID. |
 
-Dependency readiness. Behavior depends on whether memory is configured as required.
+The legacy `X-Local-AI-*` header names remain accepted during the v0.3 compatibility window.
 
-### `GET /metrics`
+Routing response headers:
 
-Prometheus text exposition. Do not expose publicly; labels deliberately avoid prompt contents.
+```text
+X-Agent-UI-Experience
+X-Agent-UI-Model
+X-Agent-UI-Backend
+X-Agent-UI-Route-Reason
+X-Request-ID
+```
 
-## Error shape
+## Model listing
 
-Errors use an OpenAI-like envelope:
+`GET /v1/models` returns both experience and registered-model entries. Metadata includes:
+
+- resource type;
+- capability requirements;
+- availability;
+- backend ID and kind;
+- declared model capabilities;
+- reasoning contract;
+- priority.
+
+An empty installation still advertises experience templates with `available: false`, allowing a setup UI to explain what remains to be configured.
+
+## Setup status
+
+```text
+GET /api/setup/status
+```
+
+Example shape:
+
+```json
+{
+  "version": 2,
+  "setup_required": true,
+  "backends": {
+    "local-llama": {
+      "kind": "llama.cpp",
+      "healthy": true,
+      "detail": 200
+    }
+  },
+  "models": {},
+  "experiences": {
+    "chat": {
+      "capability": "chat",
+      "available": false,
+      "description": "General conversational and knowledge work."
+    }
+  }
+}
+```
+
+## Catalog inspection
+
+```text
+GET /api/catalog
+```
+
+Returns the effective validated runtime catalog. Backends contain environment-variable names, never secret values.
+
+Persistent catalog mutation is deliberately not exposed through the chat gateway. Use `./hub catalog plan/apply` so host mounts and credentials cannot be changed through prompt injection.
+
+## Route preview
+
+```text
+POST /api/routes/preview
+```
+
+```json
+{
+  "model": "code",
+  "messages": [{"role": "user", "content": "Review this function"}],
+  "profile_override": null
+}
+```
+
+Response:
+
+```json
+{
+  "requested_model": "code",
+  "experience": "code",
+  "model": "registered-model-id",
+  "backend": "registered-backend-id",
+  "capabilities": ["chat", "code"],
+  "reason": "experience selected explicitly; selected highest-priority capable model"
+}
+```
+
+## Catalog reload
+
+```text
+POST /api/admin/reload-catalog
+POST /api/admin/reload-profiles
+```
+
+Reloads the effective runtime file and reconstructs backend clients. Normal `./hub catalog apply` performs this through container recreation so generated storage mounts are also updated.
+
+## Memory
+
+Create explicit memory:
+
+```text
+POST /api/memories
+```
+
+```json
+{
+  "user_id": "optional-override",
+  "namespace": "projects",
+  "content": "The deployment uses a private network.",
+  "source": "operator",
+  "metadata": {},
+  "importance": 0.7
+}
+```
+
+Search:
+
+```text
+GET /api/memories/search?q=private+network&namespace=projects&limit=10
+```
+
+Memory is isolated by user and namespace. Retrieved content is inserted as explicitly labeled untrusted reference material rather than privileged instructions.
+
+## Health and metrics
+
+```text
+GET /health/live
+GET /health/ready
+GET /health
+GET /metrics
+```
+
+`/health` returns HTTP 200 with `status: setup_required` when no models are registered. This is a valid control-plane state, not a crash loop.
+
+## Errors
+
+OpenAI-compatible routes return:
 
 ```json
 {
   "error": {
-    "message": "human-readable explanation",
-    "type": "invalid_request_error",
+    "message": "...",
+    "type": "model_unavailable",
     "param": null,
     "code": null
   }
 }
 ```
 
-Important mappings:
+Common types:
 
-| Status | Type | Typical cause |
-|---:|---|---|
-| 400 | `invalid_request_error` | Invalid JSON, messages, or reasoning effort |
-| 401 | `authentication_error` | Missing/incorrect API key |
-| 404 | `invalid_request_error` | Unknown profile/model |
-| 502 | `upstream_error` | llama.cpp connection or response failure |
-| 503 | `model_unavailable` | Model could not load, a transition timed out, or memory is disabled |
+- `authentication_error`
+- `invalid_request_error`
+- `model_unavailable`
+- `backend_unavailable`
+- `upstream_error`
 
-## Compatibility boundary
-
-The endpoint intentionally implements only the subset required by Open WebUI, SillyTavern,
-Hermes, and direct local clients. It is not a full replacement for every OpenAI API resource.
-Add new endpoints only with contract tests and a real client requirement.
+The gateway fails closed when an experience has no capable model, a requested capability is undeclared, or an explicitly coordinated local model cannot be loaded.
