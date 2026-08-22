@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from .memory import MemoryRecord, render_memory_context
@@ -12,34 +13,102 @@ class InvalidChatRequest(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedChat:
+    payload: dict[str, Any]
+    requested_effort: str | None
+    applied_effort: str | None
+
+
+def _requested_reasoning(payload: dict[str, Any], override: str | None) -> tuple[str | None, bool]:
+    if override:
+        return override, True
+    flat = payload.pop("reasoning_effort", None)
+    if flat is not None:
+        if not isinstance(flat, str):
+            raise InvalidChatRequest("reasoning_effort must be a string")
+        return flat, True
+    nested = payload.get("reasoning")
+    if isinstance(nested, dict) and nested.get("effort") is not None:
+        effort = nested.get("effort")
+        if not isinstance(effort, str):
+            raise InvalidChatRequest("reasoning.effort must be a string")
+        return effort, True
+    return None, False
+
+
+def _apply_reasoning(
+    payload: dict[str, Any],
+    resolved: ResolvedProfile,
+    override: str | None,
+) -> tuple[str | None, str | None]:
+    requested, explicit = _requested_reasoning(payload, override)
+    preference = requested or resolved.profile.reasoning_effort
+    support = resolved.model.features.reasoning
+    if preference in {None, "none"}:
+        payload.pop("reasoning_effort", None)
+        if support.transport != "object":
+            payload.pop("reasoning", None)
+        return preference, None
+
+    normalized = support.aliases.get(preference, preference)
+    if support.transport == "none":
+        if explicit:
+            raise InvalidChatRequest(
+                f"model {resolved.model_id!r} does not advertise reasoning-effort support"
+            )
+        payload.pop("reasoning", None)
+        return preference, None
+    if support.levels and normalized not in support.levels:
+        if explicit:
+            raise InvalidChatRequest(
+                f"reasoning effort {preference!r} is unsupported; choose one of {support.levels}"
+            )
+        normalized = support.default if support.default in support.levels else None
+    if normalized is None:
+        return preference, None
+
+    if support.transport == "flat":
+        payload.pop("reasoning", None)
+        payload[support.field] = normalized
+    elif support.transport == "object":
+        value = payload.get(support.field)
+        if value is None:
+            value = {}
+        if not isinstance(value, dict):
+            raise InvalidChatRequest(f"{support.field} must be an object")
+        value = dict(value)
+        value["effort"] = normalized
+        payload[support.field] = value
+    elif support.transport == "chat_template":
+        payload.pop("reasoning", None)
+        kwargs = payload.setdefault("chat_template_kwargs", {})
+        if not isinstance(kwargs, dict):
+            raise InvalidChatRequest("chat_template_kwargs must be an object")
+        kwargs[support.field] = normalized
+    return preference, normalized
+
+
 def prepare_chat_payload(
     raw: dict[str, Any],
     resolved: ResolvedProfile,
     memories: list[MemoryRecord],
     memory_max_chars: int,
     reasoning_override: str | None = None,
-) -> dict[str, Any]:
+    route_prefixes: list[str] | None = None,
+) -> PreparedChat:
     payload = deepcopy(raw)
     messages = payload.get("messages")
     if not isinstance(messages, list) or not all(isinstance(item, dict) for item in messages):
         raise InvalidChatRequest("messages must be an array of objects")
-    messages = remove_control_prefix(messages)
+    messages = remove_control_prefix(messages, route_prefixes)
 
     for key, value in resolved.profile.defaults.items():
         payload.setdefault(key, value)
 
-    requested_effort = payload.pop("reasoning_effort", None)
-    effort = reasoning_override or requested_effort or resolved.profile.reasoning_effort
-    if effort not in {None, "low", "medium", "high"}:
-        raise InvalidChatRequest("reasoning_effort must be low, medium, or high")
-
-    is_gpt_oss = resolved.backend_model.startswith("gpt-oss")
-    if is_gpt_oss and effort:
-        # llama.cpp maps this OpenAI-compatible field into the GPT-OSS Harmony
-        # template's reasoning_effort argument. Keeping it structured avoids
-        # accidentally consuming the only developer-message slot with a
-        # hand-written "Reasoning:" system message.
-        payload["reasoning_effort"] = effort
+    requested_effort, applied_effort = _apply_reasoning(
+        payload, resolved, reasoning_override
+    )
 
     instruction_sections: list[str] = []
     if resolved.profile.system_prompt:
@@ -68,18 +137,19 @@ def prepare_chat_payload(
         instruction_sections.append(_section("Retrieved memory", memory_context))
 
     if instruction_sections:
-        instruction_role = "developer" if is_gpt_oss else "system"
+        instruction_role = "developer" if resolved.model.features.developer_role else "system"
         conversation_messages.insert(
             0,
-            {
-                "role": instruction_role,
-                "content": "\n\n".join(instruction_sections),
-            },
+            {"role": instruction_role, "content": "\n\n".join(instruction_sections)},
         )
 
     payload["messages"] = conversation_messages
-    payload["model"] = resolved.backend_model
-    return payload
+    payload["model"] = resolved.upstream_model
+    return PreparedChat(
+        payload=payload,
+        requested_effort=requested_effort,
+        applied_effort=applied_effort,
+    )
 
 
 def _section(title: str, content: str) -> str:
