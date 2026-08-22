@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,15 +18,15 @@ class Settings(BaseSettings):
     llama_base_url: str = "http://llama:8080"
     llama_api_key: SecretStr = SecretStr("")
     gateway_api_key: SecretStr = SecretStr("local-development-key")
-    default_user_id: str = "andrew"
-    profile_config_path: Path = Path("config/gateway/profiles.yaml")
+    default_user_id: str = "local-user"
+    profile_config_path: Path = Path("config/models/catalog.yaml")
     model_coordinator_mode: Literal["explicit", "autoload", "none"] = "explicit"
     fixed_backend_model: str | None = None
     model_load_timeout_seconds: float = 360.0
     model_poll_interval_seconds: float = 1.0
     upstream_connect_timeout_seconds: float = 10.0
     upstream_write_timeout_seconds: float = 60.0
-    gpu_max_concurrent_requests: int = Field(default=1, ge=1, le=8)
+    gpu_max_concurrent_requests: int = Field(default=1, ge=1, le=32)
     memory_enabled: bool = True
     memory_required: bool = False
     memory_top_k: int = Field(default=6, ge=0, le=30)
@@ -58,140 +59,277 @@ class MemoryProfile(BaseModel):
     namespaces: list[str] = Field(default_factory=list)
 
 
-class Profile(BaseModel):
-    advertised: bool = False
-    route: Literal["auto"] | None = None
-    backend_model: str | None = None
-    description: str = ""
-    reasoning_effort: Literal["low", "medium", "high"] | None = None
-    system_prompt: str | None = None
-    defaults: dict[str, Any] = Field(default_factory=dict)
-    memory: MemoryProfile = Field(default_factory=MemoryProfile)
+class ReasoningFeature(BaseModel):
+    """How a model accepts an effort/reasoning control.
+
+    ``values`` maps stable experience values (for example ``fast`` or ``deep``)
+    to whatever the upstream model expects. Empty mappings pass values through.
+    """
+
+    supported: bool = True
+    request_field: str = "reasoning_effort"
+    transport: Literal["body", "chat_template_kwargs"] = "body"
+    values: dict[str, Any] = Field(default_factory=dict)
+    unsupported_policy: Literal["ignore", "reject"] = "ignore"
+
+
+class ModelFeatures(BaseModel):
+    reasoning: ReasoningFeature | None = None
+    tools: bool | None = None
+    structured_output: bool | None = None
+    vision: bool | None = None
+    audio: bool | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactSpec(BaseModel):
+    """Location of local weights without prescribing where operators store them."""
+
+    kind: Literal[
+        "managed",
+        "host_path",
+        "docker_volume",
+        "container_path",
+        "pvc",
+        "hostPath",
+        "none",
+    ] = "none"
+    path: str | None = None
+    filename: str | None = None
+    volume: str | None = None
+    claim_name: str | None = None
+    sub_path: str | None = None
+    read_only: bool = True
 
     @model_validator(mode="after")
-    def validate_target(self) -> Profile:
-        if self.route == "auto" and self.backend_model is not None:
-            raise ValueError("automatic profiles cannot define backend_model")
-        if self.route is None and not self.backend_model:
-            raise ValueError("concrete profiles must define backend_model")
+    def validate_location(self) -> ArtifactSpec:
+        if self.kind == "host_path" and not self.path:
+            raise ValueError("host_path artifacts require path")
+        if self.kind == "docker_volume" and not self.volume:
+            raise ValueError("docker_volume artifacts require volume")
+        if self.kind == "container_path" and not self.path:
+            raise ValueError("container_path artifacts require path")
+        if self.kind == "pvc" and not self.claim_name:
+            raise ValueError("pvc artifacts require claim_name")
+        if self.kind == "hostPath" and not self.path:
+            raise ValueError("hostPath artifacts require path")
         return self
 
 
 class Backend(BaseModel):
+    kind: Literal["llama.cpp", "openai-compatible", "comfyui"] = "openai-compatible"
+    enabled: bool = True
     description: str = ""
+    base_url: str | None = None
+    base_url_env: str | None = None
+    api_key_env: str | None = None
+    coordinator: Literal["explicit", "autoload", "none"] = "none"
+    serialize_requests: bool = False
+    endpoints: dict[str, str] = Field(default_factory=dict)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def resolved_base_url(self) -> str | None:
+        if self.base_url_env:
+            return os.getenv(self.base_url_env) or self.base_url
+        return self.base_url
+
+    @property
+    def resolved_api_key(self) -> str:
+        return os.getenv(self.api_key_env, "") if self.api_key_env else ""
+
+
+class ModelSpec(BaseModel):
+    display_name: str = ""
+    description: str = ""
+    enabled: bool = True
+    backend: str
+    upstream_model: str | None = None
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    features: ModelFeatures = Field(default_factory=ModelFeatures)
+    artifact: ArtifactSpec = Field(default_factory=ArtifactSpec)
+    runtime: dict[str, Any] = Field(default_factory=dict)
+    priority: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def has_capability(self, capability: str) -> bool:
+        value = self.capabilities.get(capability)
+        return bool(value is not None and value is not False)
+
+
+class Profile(BaseModel):
+    """A stable, human-facing experience backed by a model capability."""
+
+    advertised: bool = True
+    route: Literal["auto"] | None = None
+    backend_model: str | None = None
+    model: str | None = None
+    capability: str | None = None
+    description: str = ""
+    reasoning_effort: str | None = None
+    system_prompt: str | None = None
+    defaults: dict[str, Any] = Field(default_factory=dict)
+    memory: MemoryProfile = Field(default_factory=MemoryProfile)
+    selection: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_target(self) -> Profile:
+        if self.model and not self.backend_model:
+            self.backend_model = self.model
+        if self.route == "auto" and self.backend_model is not None:
+            raise ValueError("automatic experiences cannot define a model")
+        if self.route is None and not self.backend_model and not self.capability:
+            raise ValueError("experiences require model, capability, or route: auto")
+        return self
 
 
 class ProfileDocument(BaseModel):
-    version: Literal[1]
-    backends: dict[str, Backend]
-    profiles: dict[str, Profile]
+    version: Literal[1, 2]
+    backends: dict[str, Backend] = Field(default_factory=dict)
+    models: dict[str, ModelSpec] = Field(default_factory=dict)
+    profiles: dict[str, Profile] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_references(self) -> ProfileDocument:
-        unknown = {
+        unknown_backends = {
+            model.backend for model in self.models.values() if model.backend not in self.backends
+        }
+        if unknown_backends:
+            raise ValueError(f"models reference unknown backends: {sorted(unknown_backends)}")
+        unknown_models = {
             profile.backend_model
             for profile in self.profiles.values()
-            if profile.backend_model and profile.backend_model not in self.backends
+            if profile.backend_model and profile.backend_model not in self.models
         }
-        if unknown:
-            raise ValueError(f"profiles reference unknown backends: {sorted(unknown)}")
+        if unknown_models:
+            raise ValueError(f"experiences reference unknown models: {sorted(unknown_models)}")
         return self
 
 
 _SHORTHAND_RESERVED_KEYS = {
     "advertised",
     "backend_model",
+    "capability",
     "defaults",
     "description",
     "memory",
     "model",
     "reasoning_effort",
     "route",
+    "selection",
     "system_prompt",
 }
 
 
-def _expand_shorthand_profiles(raw: Any) -> dict[str, Any]:
-    """Convert the model catalog's compact profile map into gateway configuration.
+def _expand_v2(raw: dict[str, Any]) -> dict[str, Any]:
+    experiences = raw.get("experiences")
+    if experiences is None:
+        experiences = raw.get("profiles", {})
+    return {
+        "version": 2,
+        "backends": raw.get("backends", {}),
+        "models": raw.get("models", {}),
+        "profiles": experiences,
+    }
 
-    The Docker and Helm control planes generate ``profiles.json`` as a mapping of
-    virtual profile names to a model id and sampler values. Keeping this adapter in
-    the gateway lets operators add models without editing Python or maintaining a
-    second profile document. The original full ``ProfileDocument`` format remains
-    supported for advanced installations.
-    """
+
+def _expand_legacy(raw: Any) -> dict[str, Any]:
+    """Keep v0.2 profile documents and generated shorthand readable."""
 
     if not isinstance(raw, dict):
         raise RuntimeError("profile configuration must be a mapping")
-
-    if {"version", "backends", "profiles"}.issubset(raw):
-        return raw
+    if {"version", "backends", "profiles"}.issubset(raw) and raw.get("version") == 1:
+        backends = {
+            name: {"kind": "llama.cpp", "description": value.get("description", "")}
+            for name, value in raw.get("backends", {}).items()
+        }
+        models = {
+            name: {
+                "backend": "local-llama",
+                "upstream_model": name,
+                "description": value.get("description", ""),
+                "capabilities": {"chat": {}},
+            }
+            for name, value in raw.get("backends", {}).items()
+        }
+        backends.setdefault(
+            "local-llama",
+            {
+                "kind": "llama.cpp",
+                "base_url": "http://llama:8080",
+                "coordinator": "explicit",
+                "serialize_requests": True,
+            },
+        )
+        profiles = raw.get("profiles", {})
+        return {"version": 2, "backends": backends, "models": models, "profiles": profiles}
 
     model_metadata: dict[str, Any] = {}
-    if isinstance(raw.get("profiles"), dict):
-        profiles_raw = raw["profiles"]
-        if isinstance(raw.get("models"), dict):
-            model_metadata = raw["models"]
-    else:
-        profiles_raw = raw
+    profiles_raw = raw.get("profiles") if isinstance(raw.get("profiles"), dict) else raw
+    if isinstance(raw.get("models"), dict):
+        model_metadata = raw["models"]
 
-    backends: dict[str, dict[str, str]] = {}
+    backends: dict[str, dict[str, Any]] = {
+        "local-llama": {
+            "kind": "llama.cpp",
+            "base_url": "http://llama:8080",
+            "coordinator": "explicit",
+            "serialize_requests": True,
+        }
+    }
+    models: dict[str, dict[str, Any]] = {}
     profiles: dict[str, dict[str, Any]] = {}
     for profile_id, value in profiles_raw.items():
         if not isinstance(value, dict):
             raise RuntimeError(f"profile {profile_id} must be a mapping")
-
-        route = value.get("route")
         backend_model = value.get("backend_model") or value.get("model")
         profile: dict[str, Any] = {
             "advertised": bool(value.get("advertised", True)),
             "description": str(value.get("description", profile_id)),
         }
-
-        if route == "auto":
+        if value.get("route") == "auto":
             profile["route"] = "auto"
-        else:
-            if not isinstance(backend_model, str) or not backend_model:
-                raise RuntimeError(f"profile {profile_id} does not select a model")
-            profile["backend_model"] = backend_model
+        elif isinstance(backend_model, str) and backend_model:
+            profile["model"] = backend_model
             metadata = model_metadata.get(backend_model, {})
-            description = metadata.get("description", "") if isinstance(metadata, dict) else ""
-            backends.setdefault(backend_model, {"description": str(description)})
+            capabilities = metadata.get("capabilities") if isinstance(metadata, dict) else None
+            models.setdefault(
+                backend_model,
+                {
+                    "backend": "local-llama",
+                    "upstream_model": backend_model,
+                    "description": metadata.get("description", "")
+                    if isinstance(metadata, dict)
+                    else "",
+                    "capabilities": capabilities or {"chat": {}},
+                },
+            )
+        else:
+            raise RuntimeError(f"profile {profile_id} does not select a model")
 
-        reasoning_effort = value.get("reasoning_effort")
-        if reasoning_effort in {"low", "medium", "high"}:
-            profile["reasoning_effort"] = reasoning_effort
-
+        if isinstance(value.get("reasoning_effort"), str):
+            profile["reasoning_effort"] = value["reasoning_effort"]
         if isinstance(value.get("system_prompt"), str):
             profile["system_prompt"] = value["system_prompt"]
-
-        explicit_defaults = value.get("defaults", {})
-        if explicit_defaults is None:
-            explicit_defaults = {}
-        if not isinstance(explicit_defaults, dict):
-            raise RuntimeError(f"profile {profile_id} defaults must be a mapping")
-        defaults = dict(explicit_defaults)
+        defaults = dict(value.get("defaults") or {})
         defaults.update(
             {key: item for key, item in value.items() if key not in _SHORTHAND_RESERVED_KEYS}
         )
         profile["defaults"] = defaults
-
-        memory = value.get("memory")
-        if memory is not None:
-            if not isinstance(memory, dict):
-                raise RuntimeError(f"profile {profile_id} memory must be a mapping")
-            profile["memory"] = memory
-
+        if isinstance(value.get("memory"), dict):
+            profile["memory"] = value["memory"]
         profiles[str(profile_id)] = profile
-
-    return {"version": 1, "backends": backends, "profiles": profiles}
+    return {"version": 2, "backends": backends, "models": models, "profiles": profiles}
 
 
 def load_profiles(path: Path) -> ProfileDocument:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise RuntimeError(f"profile configuration does not exist: {path}") from exc
+        raise RuntimeError(f"catalog configuration does not exist: {path}") from exc
     except yaml.YAMLError as exc:
-        raise RuntimeError(f"invalid profile YAML in {path}: {exc}") from exc
-    return ProfileDocument.model_validate(_expand_shorthand_profiles(raw))
+        raise RuntimeError(f"invalid catalog YAML in {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("catalog configuration must be a mapping")
+    expanded = _expand_v2(raw) if raw.get("version") == 2 else _expand_legacy(raw)
+    return ProfileDocument.model_validate(expanded)
