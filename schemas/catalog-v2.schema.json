@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-ui.dev/schemas/catalog-v2.schema.json",
+  "title": "Agent UI Catalog v2",
+  "type": "object",
+  "required": ["version"],
+  "properties": {
+    "version": {"const": 2},
+    "backends": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/backend"},
+      "default": {}
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/model"},
+      "default": {}
+    },
+    "experiences": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/experience"},
+      "default": {}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "backend": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["llama.cpp", "openai-compatible", "comfyui"]},
+        "enabled": {"type": "boolean", "default": true},
+        "description": {"type": "string"},
+        "base_url": {"type": "string"},
+        "base_url_env": {"type": "string"},
+        "api_key_env": {"type": "string"},
+        "coordinator": {"enum": ["explicit", "autoload", "none"]},
+        "serialize_requests": {"type": "boolean"},
+        "endpoints": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "options": {"type": "object"}
+      },
+      "additionalProperties": true,
+      "anyOf": [
+        {"required": ["base_url"]},
+        {"required": ["base_url_env"]}
+      ]
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "managed",
+            "host_path",
+            "docker_volume",
+            "container_path",
+            "pvc",
+            "hostPath",
+            "none"
+          ]
+        },
+        "path": {"type": "string"},
+        "filename": {"type": "string"},
+        "volume": {"type": "string"},
+        "claim_name": {"type": "string"},
+        "sub_path": {"type": "string"},
+        "read_only": {"type": "boolean", "default": true}
+      },
+      "additionalProperties": false
+    },
+    "reasoning": {
+      "type": "object",
+      "properties": {
+        "supported": {"type": "boolean", "default": true},
+        "request_field": {"type": "string", "default": "reasoning_effort"},
+        "transport": {"enum": ["body", "chat_template_kwargs"]},
+        "values": {"type": "object"},
+        "unsupported_policy": {"enum": ["ignore", "reject"]}
+      },
+      "additionalProperties": false
+    },
+    "model": {
+      "type": "object",
+      "required": ["backend", "capabilities"],
+      "properties": {
+        "display_name": {"type": "string"},
+        "description": {"type": "string"},
+        "enabled": {"type": "boolean", "default": true},
+        "backend": {"$ref": "#/$defs/id"},
+        "upstream_model": {"type": "string"},
+        "capabilities": {
+          "oneOf": [
+            {"type": "array", "items": {"$ref": "#/$defs/id"}, "uniqueItems": true},
+            {"type": "object", "additionalProperties": true}
+          ]
+        },
+        "features": {
+          "type": "object",
+          "properties": {
+            "reasoning": {"$ref": "#/$defs/reasoning"},
+            "tools": {"type": "boolean"},
+            "structured_output": {"type": "boolean"},
+            "vision": {"type": "boolean"},
+            "audio": {"type": "boolean"},
+            "extra": {"type": "object"}
+          },
+          "additionalProperties": true
+        },
+        "artifact": {"$ref": "#/$defs/artifact"},
+        "runtime": {"type": "object"},
+        "priority": {"type": "integer", "default": 0},
+        "metadata": {"type": "object"},
+        "source": {"type": "object"},
+        "sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    "experience": {
+      "type": "object",
+      "properties": {
+        "advertised": {"type": "boolean", "default": true},
+        "model": {"$ref": "#/$defs/id"},
+        "capability": {"$ref": "#/$defs/id"},
+        "route": {"const": "auto"},
+        "description": {"type": "string"},
+        "reasoning_effort": {"type": "string"},
+        "system_prompt": {"type": "string"},
+        "defaults": {"type": "object"},
+        "memory": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "namespaces": {"type": "array", "items": {"type": "string"}}
+          },
+          "additionalProperties": false
+        },
+        "selection": {"type": "object"}
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        {"required": ["model"]},
+        {"required": ["capability"]},
+        {"required": ["route"]}
+      ]
+    }
+  }
+}
