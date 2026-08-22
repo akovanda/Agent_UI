@@ -48,6 +48,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "local-ai-hub.secretName" . }}
                   key: gateway-api-key
+            - name: PROFILE_CONFIG_PATH
+              value: /runtime/profiles.json
             - name: PROFILE_CATALOG_PATH
               value: /runtime/profiles.json
             - name: MODEL_CATALOG_PATH

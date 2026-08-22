@@ -9,9 +9,9 @@ metadata:
 data:
   config.yaml: |
     model:
-      default: gpt-oss-20b
+      default: hermes-agent
       provider: custom
-      base_url: http://{{ include "local-ai-hub.fullname" . }}-llama:{{ .Values.llama.service.port }}/v1
+      base_url: http://{{ include "local-ai-hub.fullname" . }}-gateway:{{ .Values.gateway.service.port }}/v1
       api_key: ${OPENAI_API_KEY}
       context_length: {{ (index .Values.models "gpt-oss-20b").contextSize }}
     database:

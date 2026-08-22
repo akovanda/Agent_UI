@@ -118,7 +118,10 @@ def main() -> int:
         uvicorn.run(target, host=host, port=port, workers=workers, log_level=log_level)
         return 0
 
-    print("Could not locate an ASGI application. Set GATEWAY_APP=module:attribute.", file=sys.stderr)
+    print(
+        "Could not locate an ASGI application. Set GATEWAY_APP=module:attribute.",
+        file=sys.stderr,
+    )
     for error in errors:
         print(f"  - {error}", file=sys.stderr)
     return 78

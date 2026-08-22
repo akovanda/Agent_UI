@@ -75,7 +75,10 @@ def test_compose_optional_services_use_profiles() -> None:
             encoding="utf-8"
         )
     )
-    assert compose["services"]["hermes"]["profiles"] == ["agent"]
+    hermes = compose["services"]["hermes"]
+    assert hermes["profiles"] == ["agent"]
+    assert hermes["depends_on"]["gateway"]["condition"] == "service_healthy"
+    assert "LLAMA_API_KEY" not in hermes["environment"]
     assert compose["services"]["prometheus"]["profiles"] == ["observability"]
 
 
@@ -166,6 +169,7 @@ def test_renderer_uses_existing_alias_and_creates_runtime_files(
     write_yaml(catalog_path, base_catalog())
     (models_dir / "assistant-alias.gguf").write_bytes(b"gguf-test")
     monkeypatch.setenv("LLAMA_API_KEY", "test-llama-key")
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-gateway-key")
     monkeypatch.setenv("LLAMA_FIT_TARGET_MIB", "768")
 
     args = Namespace(
@@ -183,7 +187,14 @@ def test_renderer_uses_existing_alias_and_creates_runtime_files(
     assert (runtime_dir / "profiles.json").is_file()
     assert (runtime_dir / "catalog.resolved.json").is_file()
     assert (runtime_dir / "llama_api_key").read_text().strip() == "test-llama-key"
-    assert (hermes_dir / "config.yaml").is_file()
+    hermes = yaml.safe_load((hermes_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert hermes["model"] == {
+        "default": "hermes-agent",
+        "provider": "custom",
+        "base_url": "http://gateway:8000/v1",
+        "api_key": "test-gateway-key",
+        "context_length": 65536,
+    }
 
 
 def test_model_import_normalizes_to_catalog_filename(tmp_path: Path) -> None:
@@ -316,3 +327,40 @@ def test_generated_files_are_not_tracked_by_default() -> None:
     assert "config/models/catalog.local.yaml" in ignore
     assert "*.gguf" in ignore
     assert "backups/" in ignore
+
+
+def test_checked_in_catalog_preserves_profile_quality_and_direct_aliases(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    catalog = hubctl.load_catalog(root / "config/models/catalog.yaml", None)
+    models_dir = tmp_path / "models"
+    runtime_dir = tmp_path / "runtime"
+    models_dir.mkdir()
+
+    args = Namespace(
+        catalog=str(root / "config/models/catalog.yaml"),
+        overlay=None,
+        models_dir=str(models_dir),
+        runtime_dir=str(runtime_dir),
+        hermes_dir=None,
+    )
+    assert hubctl.cmd_runtime_render(args) == 0
+
+    from local_ai_hub.config import load_profiles
+
+    profiles = load_profiles(runtime_dir / "profiles.json")
+    assert profiles.profiles["assistant"].memory.enabled is True
+    assert profiles.profiles["assistant"].memory.namespaces == [
+        "user",
+        "infrastructure",
+        "projects",
+        "general",
+    ]
+    assert "precise, candid" in (profiles.profiles["assistant"].system_prompt or "")
+    assert profiles.profiles["storyteller"].defaults["repeat_penalty"] == 1.08
+    assert profiles.profiles["storyteller"].memory.namespaces == ["story", "campaign"]
+    assert profiles.profiles["gpt-oss-20b"].advertised is False
+    assert profiles.profiles["stheno-8b"].advertised is False
+    assert profiles.profiles["hermes-agent"].memory.enabled is False
+    assert catalog["profiles"]["auto"]["route"] == "auto"

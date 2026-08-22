@@ -76,7 +76,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "local-ai-hub.secretName" . }}
-                  key: llama-api-key
+                  key: gateway-api-key
           ports:
             - name: api
               containerPort: 8642
