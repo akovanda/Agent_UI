@@ -1,0 +1,11 @@
+{{- if not .Values.registryConfig.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agent-ui.registryConfigMap" . }}
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+data:
+  registry.yaml: |
+    {{- toYaml .Values.hubRegistry | nindent 4 }}
+{{- end }}
