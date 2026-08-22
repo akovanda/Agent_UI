@@ -1,0 +1,16 @@
+Agent UI {{ .Chart.AppVersion }} has been installed.
+
+Registry status:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agent-ui.fullname" . }}-gateway 8000:{{ .Values.gateway.service.port }}
+  curl -H 'Authorization: Bearer <gateway-key>' http://127.0.0.1:8000/api/capabilities
+
+{{- if .Values.openWebUI.enabled }}
+Open WebUI:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agent-ui.fullname" . }}-openwebui 8080:{{ .Values.openWebUI.service.port }}
+  open http://127.0.0.1:8080
+{{- end }}
+
+No model weights are bundled. Apply a registry values overlay and map each local
+artifact source to a PVC, NFS export, CSI volume, or explicit hostPath. Use:
+  ./hub registry k8s-values
+  ./hub k8s upgrade
