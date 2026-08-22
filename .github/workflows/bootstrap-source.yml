@@ -1,0 +1,44 @@
+name: Bootstrap source import
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/bootstrap-source.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct and verify source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap-source/part-* > /tmp/source.b64
+          base64 --decode /tmp/source.b64 > /tmp/source.tar.xz
+          echo "9043960d0d19e8be788f3fdaec01a63d560833822c20de8147ba17cc9e97ccc8  /tmp/source.tar.xz" | sha256sum --check --strict
+
+      - name: Import Local AI Hub v0.2.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xJf /tmp/source.tar.xz -C .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Source tree is already imported."
+            exit 0
+          fi
+          git commit -m "feat: import Local AI Hub v0.2.0"
+          git push origin HEAD:main
