@@ -1,0 +1,140 @@
+{{- if .Values.hermes.enabled }}
+{{- if and .Values.hermes.persistence.enabled (not .Values.hermes.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-hermes
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.hermes.persistence.accessModes | nindent 4 }}
+  {{- if .Values.hermes.persistence.storageClassName }}
+  storageClassName: {{ .Values.hermes.persistence.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.hermes.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-hermes
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hermes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agent-ui.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hermes
+  template:
+    metadata:
+      labels:
+        {{- include "agent-ui.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: hermes
+    spec:
+      initContainers:
+        - name: configure
+          image: busybox:1.37
+          env:
+            - name: GATEWAY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agent-ui.secretName" . }}
+                  key: gateway-api-key
+          command:
+            - sh
+            - -ec
+            - |
+              cat > /opt/data/config.yaml <<EOF
+              model:
+                default: {{ .Values.hermes.profile }}
+                provider: custom
+                base_url: http://{{ include "agent-ui.fullname" . }}-gateway:{{ .Values.gateway.service.port }}/v1
+                api_key: ${GATEWAY_API_KEY}
+              tool_loop_guardrails:
+                hard_stop_enabled: true
+                hard_stop_after:
+                  exact_failure: 5
+                  idempotent_no_progress: 5
+              database:
+                journal_mode: wal
+              EOF
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+      containers:
+        - name: hermes
+          image: "{{ .Values.hermes.image.repository }}:{{ .Values.hermes.image.tag }}"
+          imagePullPolicy: {{ .Values.hermes.image.pullPolicy }}
+          args: [gateway, run]
+          env:
+            - name: API_SERVER_ENABLED
+              value: "true"
+            - name: API_SERVER_HOST
+              value: 0.0.0.0
+            - name: API_SERVER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agent-ui.secretName" . }}
+                  key: hermes-api-key
+            - name: HERMES_DASHBOARD
+              value: "1"
+            - name: HERMES_DASHBOARD_HOST
+              value: 0.0.0.0
+            - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
+              value: {{ .Values.hermes.dashboardUsername | quote }}
+            - name: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agent-ui.secretName" . }}
+                  key: hermes-dashboard-password
+            - name: HERMES_DASHBOARD_BASIC_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agent-ui.secretName" . }}
+                  key: hermes-api-key
+          ports:
+            - name: api
+              containerPort: 8642
+            - name: dashboard
+              containerPort: 9119
+          resources:
+            {{- toYaml .Values.hermes.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+      volumes:
+        - name: data
+          {{- if .Values.hermes.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.hermes.persistence.existingClaim | default (printf "%s-hermes" (include "agent-ui.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-hermes
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hermes
+spec:
+  type: {{ .Values.hermes.service.type }}
+  selector:
+    {{- include "agent-ui.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hermes
+  ports:
+    - name: api
+      port: {{ .Values.hermes.service.apiPort }}
+      targetPort: api
+    - name: dashboard
+      port: {{ .Values.hermes.service.dashboardPort }}
+      targetPort: dashboard
+{{- end }}
