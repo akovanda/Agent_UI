@@ -1,266 +1,213 @@
-global:
-  existingSecret: local-ai-hub-secrets
-  imagePullPolicy: IfNotPresent
-  storageClass: ""
-  podAnnotations: {}
+nameOverride: ""
+fullnameOverride: ""
+imagePullSecrets: []
 
-models:
-  gpt-oss-20b:
-    enabled: true
-    filename: gpt-oss-20b.gguf
-    contextSize: 65536
-    gpuLayers: auto
-    cpuMoeLayers: 8
-    cacheTypeK: q8_0
-    cacheTypeV: q8_0
-  stheno-8b:
-    enabled: true
-    filename: Llama-3.1-8B-Stheno-v3.4.Q4_K_M.gguf
-    contextSize: 32768
-    gpuLayers: all
-    cpuMoeLayers: 0
-    cacheTypeK: q8_0
-    cacheTypeV: q8_0
+secrets:
+  create: true
+  existingSecret: ""
+  postgresUser: agent_ui
+  postgresPassword: change-me
+  llamaApiKey: change-me
+  gatewayApiKey: change-me
+  webuiSecretKey: change-me
+  hermesApiKey: change-me
 
-hubProfiles:
-  auto:
-    route: auto
-    description: Automatically selects the assistant or storyteller profile.
-  assistant:
-    model: gpt-oss-20b
-    description: Balanced general-purpose local assistant.
-    system_prompt: |
-      You are a precise, candid, and practical private assistant. Prefer evidence and
-      explicit assumptions. Produce executable, testable technical guidance and call
-      out operational risks before destructive actions. Never claim tool access or
-      current information unless it was actually supplied to this request.
-    temperature: 0.55
-    top_p: 0.9
-    min_p: 0.05
-    max_tokens: 8192
-    reasoning_effort: medium
-    memory:
-      enabled: true
-      namespaces: [user, infrastructure, projects, general]
-  assistant-fast:
-    model: gpt-oss-20b
-    description: Lower-latency assistant profile for routine interactions.
-    system_prompt: |
-      You are a precise, candid, and practical private assistant. Prefer evidence and
-      explicit assumptions. Produce executable, testable technical guidance and call
-      out operational risks before destructive actions. Never claim tool access or
-      current information unless it was actually supplied to this request.
-    temperature: 0.45
-    top_p: 0.9
-    min_p: 0.05
-    max_tokens: 4096
-    reasoning_effort: low
-    memory:
-      enabled: true
-      namespaces: [user, infrastructure, projects, general]
-  assistant-deep:
-    model: gpt-oss-20b
-    description: Higher-reasoning profile for difficult technical work.
-    system_prompt: |
-      You are a precise, candid, and practical private assistant. Prefer evidence and
-      explicit assumptions. Produce executable, testable technical guidance and call
-      out operational risks before destructive actions. Never claim tool access or
-      current information unless it was actually supplied to this request.
-    temperature: 0.5
-    top_p: 0.9
-    min_p: 0.05
-    max_tokens: 16384
-    reasoning_effort: high
-    memory:
-      enabled: true
-      namespaces: [user, infrastructure, projects, general]
-  hermes-agent:
-    model: gpt-oss-20b
-    advertised: false
-    description: High-reasoning GPT-OSS profile for Hermes Agent tool loops.
-    temperature: 0.45
-    top_p: 0.9
-    min_p: 0.05
-    max_tokens: 16384
-    reasoning_effort: high
-    memory:
-      enabled: false
-  storyteller:
-    model: stheno-8b
-    description: Creative writing, RPG, character, and worldbuilding profile.
-    system_prompt: |
-      You are a collaborative storyteller and game master. Maintain character voice,
-      continuity, stakes, and scene momentum. Distinguish established facts from new
-      inventions. Do not dictate the player's choices; present consequential situations
-      and let the player choose intent. Favor vivid but controlled prose over exposition.
-    temperature: 1.3
-    top_p: 0.95
-    min_p: 0.15
-    repeat_penalty: 1.08
-    max_tokens: 8192
-    reasoning_effort: none
-    memory:
-      enabled: true
-      namespaces: [story, campaign]
-  gpt-oss-20b:
-    model: gpt-oss-20b
-    advertised: false
-    description: Direct GPT-OSS access with minimal gateway prompting.
-    temperature: 0.55
-    top_p: 0.9
-    min_p: 0.05
-    max_tokens: 8192
-    reasoning_effort: medium
-  stheno-8b:
-    model: stheno-8b
-    advertised: false
-    description: Direct Stheno access with creative sampler defaults.
-    temperature: 1.3
-    top_p: 0.95
-    min_p: 0.15
-    repeat_penalty: 1.08
-    max_tokens: 8192
-postgresql:
+postgres:
   enabled: true
   image:
     repository: pgvector/pgvector
     tag: pg16
-  storage:
-    size: 20Gi
-    existingClaim: ""
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 2Gi
-
-gateway:
-  replicaCount: 1
-  app: ""
-  image:
-    repository: local-ai-hub-gateway
-    tag: "0.2.0"
     pullPolicy: IfNotPresent
   service:
-    type: ClusterIP
-    port: 8000
-  resources:
-    requests:
-      cpu: 250m
-      memory: 256Mi
-    limits:
-      cpu: "4"
-      memory: 4Gi
-
-llama:
-  image:
-    repository: ghcr.io/ggml-org/llama.cpp
-    tag: server-cuda
-  service:
-    type: ClusterIP
-    port: 8080
-  modelsMax: 1
-  fitTargetMiB: 1024
+    port: 5432
   storage:
-    size: 50Gi
+    size: 20Gi
+    storageClass: ""
     existingClaim: ""
-    accessModes: [ReadWriteOnce]
-  gpu:
-    resourceName: nvidia.com/gpu
-    count: 1
-  shmSize: 2Gi
-  resources:
-    requests:
-      cpu: "2"
-      memory: 8Gi
-    limits:
-      cpu: "24"
-      memory: 96Gi
+  resources: {}
   nodeSelector: {}
   tolerations: []
   affinity: {}
 
+llama:
+  enabled: true
+  image:
+    repository: ghcr.io/ggml-org/llama.cpp
+    tag: server-cuda
+    pullPolicy: IfNotPresent
+  service:
+    port: 8080
+  storage:
+    size: 100Gi
+    storageClass: ""
+    existingClaim: ""
+  modelsMax: 1
+  fitTargetMiB: 1024
+  sharedMemorySizeLimit: 2Gi
+  gpuResourceName: nvidia.com/gpu
+  gpuCount: 1
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # AI-generated values may add existing PVCs, hostPath volumes, CSI volumes,
+  # object-store mounts, or any other Kubernetes-native source here.
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# No model identities ship with Agent UI. `./hub catalog k8s-values` populates
+# this map from the same catalog used by Compose.
+models: {}
+
+# Stable human-facing experiences select the highest-priority capable model.
+experiences:
+  chat:
+    advertised: true
+    capability: chat
+    description: General conversational and knowledge work.
+    defaults: {temperature: 0.6, top_p: 0.9, max_tokens: 8192}
+    memory: {enabled: true, namespaces: [user, general, projects]}
+  code:
+    advertised: true
+    capability: code
+    description: Software engineering, debugging, and code generation.
+    defaults: {temperature: 0.25, top_p: 0.9, max_tokens: 16384}
+    memory: {enabled: true, namespaces: [user, projects, code]}
+  story:
+    advertised: true
+    capability: story
+    description: Writing, roleplay, campaigns, and worldbuilding.
+    defaults: {temperature: 1.1, top_p: 0.95, max_tokens: 8192}
+    memory: {enabled: true, namespaces: [user, story]}
+  image:
+    advertised: true
+    capability: image
+    description: Image generation through a registered image backend.
+    defaults: {}
+    memory: {enabled: false}
+  agent:
+    advertised: true
+    capability: agent
+    description: Tool-using and multi-step agent workloads.
+    defaults: {temperature: 0.4, top_p: 0.9, max_tokens: 16384}
+    memory: {enabled: true, namespaces: [user, general, projects, infrastructure]}
+  embeddings:
+    advertised: false
+    capability: embeddings
+    defaults: {}
+    memory: {enabled: false}
+  rerank:
+    advertised: false
+    capability: rerank
+    defaults: {}
+    memory: {enabled: false}
+
+# Compatibility key consumed by the current chart templates. It mirrors
+# experiences and may be overridden by generated values.
+hubProfiles: {}
+
+gateway:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: agent-ui-gateway
+    tag: 0.3.0
+    pullPolicy: IfNotPresent
+  service:
+    port: 8000
+  workers: 1
+  defaultUserId: local-user
+  memoryEnabled: true
+  memoryRequired: false
+  memoryTopK: 6
+  memoryMaxChars: 6000
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
 openWebUI:
   enabled: true
+  replicaCount: 1
   image:
     repository: ghcr.io/open-webui/open-webui
     tag: main
+    pullPolicy: IfNotPresent
   service:
     type: ClusterIP
-    port: 8080
-  signupEnabled: true
-  memoriesEnabled: false
+    port: 80
+    targetPort: 8080
   storage:
     size: 10Gi
+    storageClass: ""
     existingClaim: ""
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: "4"
-      memory: 8Gi
+  enableSignup: true
+  enableMemories: false
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 sillyTavern:
-  enabled: true
+  enabled: false
+  replicaCount: 1
   image:
     repository: ghcr.io/sillytavern/sillytavern
     tag: latest
+    pullPolicy: IfNotPresent
   service:
     type: ClusterIP
-    port: 8000
+    port: 80
+    targetPort: 8000
   storage:
     size: 10Gi
+    storageClass: ""
     existingClaim: ""
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: "2"
-      memory: 4Gi
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 hermes:
   enabled: false
+  replicaCount: 1
   image:
     repository: nousresearch/hermes-agent
     tag: latest
+    pullPolicy: IfNotPresent
   service:
-    type: ClusterIP
     apiPort: 8642
     dashboardPort: 9119
   storage:
     size: 10Gi
+    storageClass: ""
     existingClaim: ""
   dashboard:
     enabled: true
-  resources:
-    requests:
-      cpu: 250m
-      memory: 1Gi
-    limits:
-      cpu: "4"
-      memory: 8Gi
+    username: admin
+    password: change-me
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 ingress:
   enabled: false
   className: ""
   annotations: {}
-  openWebUI:
-    host: ai.example.internal
-    tlsSecret: ""
-  sillyTavern:
-    host: story.example.internal
-    tlsSecret: ""
-  hermes:
-    host: agent.example.internal
-    tlsSecret: ""
-
-serviceMonitor:
-  enabled: false
-  interval: 15s
-  labels: {}
+  hosts:
+    - host: agent-ui.local
+      paths:
+        - path: /
+          pathType: Prefix
+          service: open-webui
+  tls: []
 
 networkPolicy:
   enabled: false
+
+serviceMonitor:
+  enabled: false
+  labels: {}
+  interval: 30s
