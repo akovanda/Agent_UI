@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .config import Endpoint
+
 
 class MemoryCreate(BaseModel):
     user_id: str | None = Field(default=None, min_length=1, max_length=200)
@@ -16,5 +18,6 @@ class MemoryCreate(BaseModel):
 
 class RoutePreview(BaseModel):
     model: str = "auto"
-    messages: list[dict[str, Any]]
+    endpoint: Endpoint = "chat"
+    messages: list[dict[str, Any]] = Field(default_factory=list)
     profile_override: str | None = None
