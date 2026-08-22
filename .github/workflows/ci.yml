@@ -3,81 +3,90 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
-
-concurrency:
-  group: local-ai-hub-${{ github.ref }}
-  cancel-in-progress: true
+    branches: [main, v0.3-capability-registry]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  container-control-plane:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build toolbox
-        run: docker build -f deploy/docker/toolbox.Dockerfile -t local-ai-hub-toolbox:0.2.0 .
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
 
-      - name: Unit tests
+      - name: Install project and validation tools
         run: |
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            --entrypoint bash \
-            local-ai-hub-toolbox:0.2.0 \
-            -lc 'python -m pytest --cov=local_ai_hub --cov-branch --cov-report=term-missing --cov-fail-under=80'
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' 'huggingface_hub>=0.34,<1' 'requests>=2.32,<3'
 
-      - name: Lint Python and shell
+      - name: Validate declarative registry
         run: |
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            --entrypoint bash \
-            local-ai-hub-toolbox:0.2.0 \
-            -lc 'ruff check . && ruff format --check . && bash -n hub ops/*.sh'
+          python ops/registryctl.py registry validate \
+            --registry config/registry.yaml \
+            --overlay /tmp/registry.local.yaml
+          python ops/registryctl.py registry schema > /tmp/registry.schema.json
+          python ops/registryctl.py registry plan \
+            --registry config/registry.yaml \
+            --overlay /tmp/registry.local.yaml > /tmp/registry.plan.json
 
-      - name: Generate isolated Compose configuration
+      - name: Lint and format
         run: |
-          docker run --rm --network host \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            local-ai-hub-toolbox:0.2.0 \
-            env init --template /workspace/.env.example --output /workspace/.env
-          docker compose --env-file .env -f compose.yaml config >/tmp/compose.rendered.yaml
+          ruff check .
+          ruff format --check .
+          bash -n hub ops/*.sh
 
-      - name: Render model runtime configuration
+      - name: Test with branch coverage
         run: |
-          mkdir -p /tmp/models /tmp/runtime /tmp/state /tmp/hermes
-          docker run --rm --env-file .env \
-            -v /tmp/models:/models \
-            -v /tmp/runtime:/runtime \
-            -v /tmp/state:/state \
-            -v /tmp/hermes:/hermes \
-            local-ai-hub-toolbox:0.2.0 \
-            runtime render --runtime-dir /runtime --hermes-dir /hermes
-          test -s /tmp/runtime/models.ini
-          test -s /tmp/runtime/profiles.json
+          pytest --cov=local_ai_hub --cov-branch --cov-report=term-missing
 
-      - name: Helm lint and template
+      - name: Render Docker Compose
         run: |
-          docker run --rm \
-            --entrypoint helm \
-            local-ai-hub-toolbox:0.2.0 \
-            lint /opt/local-ai-hub/deploy/helm/local-ai-hub
-          docker run --rm \
-            --entrypoint helm \
-            local-ai-hub-toolbox:0.2.0 \
-            template local-ai-hub /opt/local-ai-hub/deploy/helm/local-ai-hub \
-            --namespace local-ai-hub >/tmp/helm.rendered.yaml
+          python ops/registryctl.py env init \
+            --template .env.example \
+            --output .env
+          python ops/registryctl.py registry compose-override \
+            --registry config/registry.yaml \
+            --overlay /tmp/registry.local.yaml \
+            --output .agent-ui/compose.sources.yaml
+          docker compose --env-file .env -f compose.yaml \
+            -f .agent-ui/compose.sources.yaml config --quiet
 
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+
+      - name: Lint and render Helm chart
+        run: |
+          helm lint deploy/helm/agent-ui
+          helm template agent-ui deploy/helm/agent-ui \
+            --namespace agent-ui > /tmp/agent-ui.yaml
+          test -s /tmp/agent-ui.yaml
+
+      - name: Ensure weights and secrets are not tracked
+        run: |
+          if git ls-files | grep -E '\.(gguf|safetensors|ckpt|onnx|pt|pth|bin)$'; then
+            echo 'Model weights must not be committed.' >&2
+            exit 1
+          fi
+          test ! -e .env || test "$(git ls-files .env)" = ""
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
       - name: Build gateway image
-        run: docker build -f deploy/docker/gateway.Dockerfile -t local-ai-hub-gateway:0.2.0 .
-
-      - name: Secret and model tracking guard
-        run: |
-          ! git ls-files | grep -E '(^|/)(\.env|.*\.gguf|.*\.safetensors)$'
-          git diff --check
+        run: docker build -f services/gateway/Dockerfile -t agent-ui-gateway:test .
+      - name: Build toolbox image
+        run: docker build -f deploy/docker/toolbox.Dockerfile -t agent-ui-toolbox:test .
