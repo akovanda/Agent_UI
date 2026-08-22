@@ -1,138 +1,339 @@
-# Model management
+# Model, Provider, and Source Management
 
-## Catalog as the contract
+Agent UI 0.3 separates four concepts:
 
-`config/models/catalog.yaml` describes model identity, canonical filename, aliases, source metadata, llama.cpp runtime settings, and virtual profiles. The generated llama.cpp preset is not hand-edited.
+1. **Source** — where a local artifact is mounted.
+2. **Provider** — the inference endpoint and protocol.
+3. **Model** — an upstream model plus capabilities and feature metadata.
+4. **Profile** — a human workload such as chat, code, story, image, or agent.
 
-The base catalog defines:
+This separation lets one model serve several profiles and lets one profile move between models without changing the UI.
 
-- `gpt-oss-20b`
-- `stheno-8b`
-- `assistant`
-- `assistant-fast`
-- `assistant-deep`
-- `storyteller`
+## Effective registry
 
-Private additions are written to `/state/catalog.local.yaml` in the managed state volume. The overlay is merged recursively with the base catalog.
+The immutable base registry is baked into the toolbox image at:
 
-## Importing local GGUF files
+```text
+/opt/agent-ui/config/registry.yaml
+```
+
+Machine-specific changes are stored in the persistent state volume at:
+
+```text
+/state/registry.local.yaml
+```
+
+The control plane deep-merges the overlay into the base and validates the result with the same Pydantic schema used by the gateway.
 
 ```bash
-./hub model import MODEL_ID /absolute/path/to/model.gguf
+./hub registry show
+./hub registry validate
+./hub registry plan
+./hub registry schema
 ```
 
-The operation:
+`plan` is JSON by default and reports:
 
-1. Mounts the source directory read-only.
-2. Streams the file into a temporary path in the model volume.
-3. Flushes it to disk.
-4. Atomically renames it to the canonical catalog filename.
-5. Prints its SHA-256 digest.
-6. Regenerates runtime configuration.
-7. Restarts llama.cpp if it is already running.
+- provider status and protocol
+- registered model capabilities
+- the model selected for every profile
+- profiles that cannot currently resolve
+- source mount configuration
 
-Replacement requires `--force`.
+## Sources
 
-## Downloading
+### Managed source
 
-Catalog source:
+The base registry defines `managed`, mapped to the Docker volume at `/models`.
 
 ```bash
-./hub model fetch stheno-8b
+./hub model register portable \
+  --provider local-gguf \
+  --source managed \
+  --path portable.gguf \
+  --capability chat
+
+./hub model import portable /downloaded/portable.gguf
 ```
 
-Ad hoc Hugging Face source:
+This copies data and is intentionally optional.
+
+### Existing host directory
 
 ```bash
-HF_TOKEN=... ./hub model fetch MODEL_ID \
-  --repository OWNER/REPOSITORY \
-  --file EXACT-FILENAME.gguf
+./hub source add shared \
+  --host-path /mnt/shared/models
 ```
 
-Direct URL:
+This writes only registry metadata. The generated Compose override mounts the directory read-only:
+
+```text
+/mnt/shared/models -> /model-sources/shared
+```
+
+Register files relative to that directory:
 
 ```bash
-./hub model fetch MODEL_ID --url https://example/model.gguf
+./hub model register coding \
+  --provider local-gguf \
+  --source shared \
+  --path coding/coding.gguf \
+  --capability chat \
+  --capability code
 ```
 
-Downloads use a partial file and atomic rename. Add a `sha256` field to a model or source record when a trusted digest is available.
+### Existing individual file
 
-## Registering another model
+The convenience form creates a dedicated source for the parent directory:
 
 ```bash
-./hub model register qwen-local \
-  --filename Qwen-Local-Q4_K_M.gguf \
-  --display-name "Qwen Local" \
-  --role general \
-  --context 32768 \
-  --gpu-layers auto \
-  --cache-type q8_0
-
-./hub model import qwen-local /path/to/Qwen-Local-Q4_K_M.gguf
+./hub model register campaign-writer \
+  --provider local-gguf \
+  --host-path /srv/projects/campaign/models/writer.gguf \
+  --capability chat \
+  --capability story \
+  --capability long_context
 ```
 
-Registration changes only the local overlay. It does not download or load a model. By
-default it also creates an advertised gateway profile with the same id, so `qwen-local`
-is immediately selectable after import and runtime rendering. Give the profile a different
-name or register an inference-only backend with:
+The weight remains in the project directory.
+
+### Source safety
+
+- Host paths must be absolute existing directories.
+- Host sources are read-only unless `--writable` is explicitly supplied.
+- Docker is instructed not to create a missing bind source.
+- Artifact paths must be relative and may not contain `..`.
+- Model weights remain outside Git.
+
+## Providers
+
+A provider describes an API, not a model family.
+
+### Local llama.cpp provider
+
+The base registry supplies `local-gguf`:
+
+```yaml
+providers:
+  local-gguf:
+    type: llama_cpp
+    base_url: http://llama:8080/v1
+    control_url: http://llama:8080
+    api_key_env: LLAMA_API_KEY
+    resource_group: local-gpu
+    max_concurrency: 1
+```
+
+`llama_cpp` adds explicit model load/unload coordination. The gateway serializes transitions inside the provider's `resource_group` and can keep one model resident on a constrained GPU.
+
+### OpenAI-compatible provider
 
 ```bash
-./hub model register qwen-local \
-  --filename Qwen-Local-Q4_K_M.gguf \
-  --profile-id qwen-chat
-
-./hub model register embedding-backend \
-  --filename Embedding-Model-Q8_0.gguf \
-  --no-profile
+./hub provider add text-service \
+  --type openai_compatible \
+  --base-url http://text-service:8000/v1 \
+  --api-key-env TEXT_SERVICE_KEY \
+  --endpoint chat=chat/completions \
+  --endpoint embedding=embeddings
 ```
 
-Advanced sampler, memory, and system-prompt settings can be added under `profiles:` in
-`config/models/catalog.local.yaml`; no Python changes are required.
+The registry stores `TEXT_SERVICE_KEY`, not its value. Add the value to `.env` or a Kubernetes Secret-backed environment entry.
 
-## Runtime presets
+A provider can expose one or several endpoint types:
 
-The renderer creates `/runtime/models.ini` in a named volume. Relevant defaults include:
+- `chat`
+- `completion`
+- `image`
+- `embedding`
+- `rerank`
 
-```ini
-version = 1
+## Models
 
-[*]
-jinja = true
-fit = true
-fit-target = 1024
-parallel = 1
-load-on-startup = false
-stop-timeout = 180
-```
-
-Per-model sections point to files in `/models` and apply model-specific context, KV-cache, GPU, and MoE settings.
-
-## T4 baseline
-
-GPT-OSS 20B starts with:
-
-- 65,536-token context;
-- automatic GPU layer fitting;
-- eight CPU-MoE layers;
-- Q8 KV cache;
-- one parallel slot;
-- 1,024 MiB fit margin.
-
-Stheno starts with:
-
-- 32,768-token context;
-- all GPU layers when possible;
-- Q8 KV cache;
-- one parallel slot.
-
-These are operational hypotheses. Adjust only after collecting benchmark and VRAM evidence.
-
-## Kubernetes model PVC
+A model registration can refer to a local artifact or only to an upstream model identifier.
 
 ```bash
-./hub k8s model-import MODEL_ID /path/to/model.gguf
+./hub model register general \
+  --provider text-service \
+  --upstream-model upstream-name \
+  --capability chat \
+  --capability code \
+  --capability tools \
+  --tag general \
+  --priority 20
 ```
 
-The toolbox creates a temporary pod that mounts the model PVC, copies the file under the canonical catalog name, flushes it, deletes the loader pod, and restarts the llama Deployment.
+Capabilities are open strings. The built-in workload profiles use:
 
-For large files, `kubectl cp` is simple but not always the fastest path. On remote clusters, object storage plus an authenticated init job may be preferable.
+- `chat`
+- `code`
+- `story`
+- `long_context`
+- `vision`
+- `image`
+- `embedding`
+- `rerank`
+- `tools`
+- `reasoning`
+- `fast`
+
+Additional capabilities are preserved and visible through `/api/capabilities`.
+
+### Runtime arguments for llama.cpp
+
+Runtime key/value pairs are copied into the generated llama.cpp preset:
+
+```bash
+./hub model register local-chat \
+  --provider local-gguf \
+  --host-path /models/local-chat.gguf \
+  --capability chat \
+  --runtime ctx-size=65536 \
+  --runtime n-gpu-layers=all \
+  --runtime cache-type-k=q8_0 \
+  --runtime cache-type-v=q8_0
+```
+
+Agent UI does not infer safe settings from a model's name. Operators or setup agents declare them explicitly and validate on the target hardware.
+
+## Reasoning support
+
+Reasoning is feature metadata:
+
+```bash
+./hub model register reasoning-model \
+  --provider text-service \
+  --upstream-model reasoning-upstream \
+  --capability chat \
+  --capability reasoning \
+  --reasoning-transport object \
+  --reasoning-field reasoning \
+  --reasoning-level low,medium,high
+```
+
+Supported transports:
+
+| Transport | Upstream shape |
+|---|---|
+| `flat` | `{"reasoning_effort":"high"}` |
+| `object` | `{"reasoning":{"effort":"high"}}` |
+| `chat_template` | `{"chat_template_kwargs":{"reasoning_effort":"high"}}` |
+| `none` | effort is not forwarded |
+
+A client may use the flat field, nested object, or `X-Reasoning-Effort`. Unsupported explicit requests return a clear 400 response. Profile preferences are best-effort.
+
+## Profile selection
+
+Profiles use selectors rather than model names:
+
+```yaml
+profiles:
+  code:
+    endpoint: chat
+    requires:
+      all_of: [chat]
+      prefer_capabilities: [code, tools, reasoning]
+```
+
+Selection order is deterministic:
+
+1. Reject disabled models or providers.
+2. Require the endpoint capability.
+3. Apply `all_of`, `any_of`, `none_of`, and required tags.
+4. Rank preferred capabilities and tags.
+5. Apply operator priority.
+6. Break ties by model ID.
+
+A profile can be pinned when needed:
+
+```bash
+./hub profile bind code local-chat
+./hub profile unbind code
+```
+
+Direct model IDs can also be sent as the OpenAI `model` field.
+
+## Declarative registration
+
+A setup agent can write one overlay:
+
+```yaml
+version: 2
+sources:
+  shared:
+    type: host
+    host_path: /mnt/shared/models
+    mount_path: /model-sources/shared
+    read_only: true
+providers:
+  local-text:
+    type: llama_cpp
+    base_url: http://llama:8080/v1
+    control_url: http://llama:8080
+    api_key_env: LLAMA_API_KEY
+models:
+  workstation-chat:
+    provider: local-text
+    capabilities: [chat, code, tools, reasoning]
+    artifact:
+      source: shared
+      path: workstation/chat.gguf
+    runtime:
+      ctx-size: 32768
+      n-gpu-layers: all
+    features:
+      developer_role: true
+      tool_calling: true
+      reasoning:
+        transport: flat
+        field: reasoning_effort
+        levels: [low, medium, high]
+```
+
+Apply and inspect it:
+
+```bash
+./hub registry apply machine.yaml
+./hub registry validate
+./hub registry plan
+```
+
+## Kubernetes source mappings
+
+A host source must state how Kubernetes can access the same bytes:
+
+```yaml
+sources:
+  shared:
+    type: host
+    host_path: /mnt/shared/models
+    mount_path: /model-sources/shared
+    read_only: true
+    kubernetes:
+      type: existingClaim
+      claimName: shared-models-pvc
+```
+
+Other mappings:
+
+```yaml
+kubernetes:
+  type: nfs
+  server: 10.0.0.10
+  path: /exports/models
+```
+
+```yaml
+kubernetes:
+  type: csi
+  driver: example.csi.io
+  volumeAttributes:
+    share: models
+```
+
+```yaml
+kubernetes:
+  type: hostPath
+  path: /mnt/shared/models
+```
+
+`hostPath` is intentionally explicit because it couples a pod to node-local state. Rendering fails when an enabled local model references a host source without a Kubernetes mapping.
