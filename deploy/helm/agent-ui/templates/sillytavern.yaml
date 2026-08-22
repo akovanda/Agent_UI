@@ -1,0 +1,89 @@
+{{- if .Values.sillyTavern.enabled }}
+{{- if and .Values.sillyTavern.persistence.enabled (not .Values.sillyTavern.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-sillytavern
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.sillyTavern.persistence.accessModes | nindent 4 }}
+  {{- if .Values.sillyTavern.persistence.storageClassName }}
+  storageClassName: {{ .Values.sillyTavern.persistence.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.sillyTavern.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-sillytavern
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sillytavern
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agent-ui.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: sillytavern
+  template:
+    metadata:
+      labels:
+        {{- include "agent-ui.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: sillytavern
+    spec:
+      containers:
+        - name: sillytavern
+          image: "{{ .Values.sillyTavern.image.repository }}:{{ .Values.sillyTavern.image.tag }}"
+          imagePullPolicy: {{ .Values.sillyTavern.image.pullPolicy }}
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: FORCE_COLOR
+              value: "1"
+            - name: SILLYTAVERN_HEARTBEATINTERVAL
+              value: "30"
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            exec:
+              command: [node, src/healthcheck.js]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 20
+          resources:
+            {{- toYaml .Values.sillyTavern.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /home/node/app/data
+      volumes:
+        - name: data
+          {{- if .Values.sillyTavern.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.sillyTavern.persistence.existingClaim | default (printf "%s-sillytavern" (include "agent-ui.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-sillytavern
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sillytavern
+spec:
+  type: {{ .Values.sillyTavern.service.type }}
+  selector:
+    {{- include "agent-ui.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: sillytavern
+  ports:
+    - name: http
+      port: {{ .Values.sillyTavern.service.port }}
+      targetPort: http
+{{- end }}
