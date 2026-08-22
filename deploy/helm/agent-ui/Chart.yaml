@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agent-ui
+description: Capability-aware local AI gateway, interfaces, registry, and inference services
+type: application
+version: 0.3.0
+appVersion: "0.3.0"
