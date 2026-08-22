@@ -1,0 +1,103 @@
+{{- if .Values.openWebUI.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-openwebui
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openwebui
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "local-ai-hub.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: openwebui
+  template:
+    metadata:
+      labels:
+        {{- include "local-ai-hub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: openwebui
+      annotations:
+        {{- toYaml .Values.global.podAnnotations | nindent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: openwebui
+          image: "{{ .Values.openWebUI.image.repository }}:{{ .Values.openWebUI.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            - name: ENABLE_OLLAMA_API
+              value: "false"
+            - name: ENABLE_OPENAI_API
+              value: "true"
+            - name: OPENAI_API_BASE_URL
+              value: http://{{ include "local-ai-hub.fullname" . }}-gateway:{{ .Values.gateway.service.port }}/v1
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: gateway-api-key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: openwebui-database-url
+            - name: PGVECTOR_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: openwebui-database-url
+            - name: VECTOR_DB
+              value: pgvector
+            - name: WEBUI_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: webui-secret-key
+            - name: WEBUI_AUTH
+              value: "true"
+            - name: ENABLE_SIGNUP
+              value: {{ .Values.openWebUI.signupEnabled | quote }}
+            - name: ENABLE_MEMORIES
+              value: {{ .Values.openWebUI.memoriesEnabled | quote }}
+            - name: ENABLE_MEMORY_SYSTEM_CONTEXT
+              value: "true"
+            - name: ENABLE_PERSISTENT_CONFIG
+              value: "false"
+            - name: DO_NOT_TRACK
+              value: "true"
+            - name: ANONYMIZED_TELEMETRY
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.openWebUI.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-openwebui" (include "local-ai-hub.fullname" .)) .Values.openWebUI.storage.existingClaim }}
+{{- end }}

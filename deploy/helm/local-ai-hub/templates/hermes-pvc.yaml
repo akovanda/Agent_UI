@@ -1,0 +1,15 @@
+{{- if and .Values.hermes.enabled (not .Values.hermes.storage.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-hermes
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hermes
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- include "local-ai-hub.storageClass" . | nindent 2 }}
+  resources:
+    requests:
+      storage: {{ .Values.hermes.storage.size }}
+{{- end }}

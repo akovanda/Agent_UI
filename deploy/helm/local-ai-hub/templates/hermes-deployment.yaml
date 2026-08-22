@@ -1,0 +1,97 @@
+{{- if .Values.hermes.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-hermes
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hermes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "local-ai-hub.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hermes
+  template:
+    metadata:
+      labels:
+        {{- include "local-ai-hub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: hermes
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/hermes-configmap.yaml") . | sha256sum }}
+        {{- toYaml .Values.global.podAnnotations | nindent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 10000
+      initContainers:
+        - name: configure
+          image: busybox:1.37
+          command:
+            - sh
+            - -ec
+            - |
+              cp /managed/config.yaml /opt/data/config.yaml
+              cp /managed/SOUL.md /opt/data/SOUL.md
+              chmod 0600 /opt/data/config.yaml /opt/data/SOUL.md
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+            - name: managed
+              mountPath: /managed
+              readOnly: true
+      containers:
+        - name: hermes
+          image: "{{ .Values.hermes.image.repository }}:{{ .Values.hermes.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          args: ["gateway", "run"]
+          env:
+            - name: API_SERVER_ENABLED
+              value: "true"
+            - name: API_SERVER_HOST
+              value: 0.0.0.0
+            - name: API_SERVER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: hermes-api-key
+            - name: API_SERVER_CORS_ORIGINS
+              value: "*"
+            - name: HERMES_DASHBOARD
+              value: {{ ternary "1" "0" .Values.hermes.dashboard.enabled | quote }}
+            - name: HERMES_DASHBOARD_HOST
+              value: 0.0.0.0
+            - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: hermes-dashboard-username
+            - name: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: hermes-dashboard-password
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: gateway-api-key
+          ports:
+            - name: api
+              containerPort: 8642
+            - name: dashboard
+              containerPort: 9119
+          resources:
+            {{- toYaml .Values.hermes.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-hermes" (include "local-ai-hub.fullname" .)) .Values.hermes.storage.existingClaim }}
+        - name: managed
+          configMap:
+            name: {{ include "local-ai-hub.fullname" . }}-hermes
+{{- end }}

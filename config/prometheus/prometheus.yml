@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: llama-cpp
+    metrics_path: /metrics
+    authorization:
+      credentials_file: /run/secrets/llama_api_key
+    static_configs:
+      - targets: ["llama:8080"]
+  - job_name: local-ai-hub-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["gateway:8000"]

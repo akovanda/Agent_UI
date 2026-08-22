@@ -1,0 +1,104 @@
+{{- if .Values.ingress.enabled }}
+{{- $fullName := include "local-ai-hub.fullname" . }}
+{{- if .Values.openWebUI.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-openwebui
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openwebui
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.openWebUI.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullName }}-openwebui
+                port:
+                  name: http
+  {{- if .Values.ingress.openWebUI.tlsSecret }}
+  tls:
+    - hosts: [{{ .Values.ingress.openWebUI.host | quote }}]
+      secretName: {{ .Values.ingress.openWebUI.tlsSecret }}
+  {{- end }}
+---
+{{- end }}
+{{- if .Values.sillyTavern.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-sillytavern
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sillytavern
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.sillyTavern.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullName }}-sillytavern
+                port:
+                  name: http
+  {{- if .Values.ingress.sillyTavern.tlsSecret }}
+  tls:
+    - hosts: [{{ .Values.ingress.sillyTavern.host | quote }}]
+      secretName: {{ .Values.ingress.sillyTavern.tlsSecret }}
+  {{- end }}
+---
+{{- end }}
+{{- if .Values.hermes.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-hermes
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hermes
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.hermes.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullName }}-hermes
+                port:
+                  name: dashboard
+  {{- if .Values.ingress.hermes.tlsSecret }}
+  tls:
+    - hosts: [{{ .Values.ingress.hermes.host | quote }}]
+      secretName: {{ .Values.ingress.hermes.tlsSecret }}
+  {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,124 @@
+version: 1
+
+backends:
+  gpt-oss-20b:
+    description: General chat, reasoning, coding, knowledge, RAG, and tool use.
+  stheno-8b:
+    description: Creative writing, roleplay, character dialogue, and campaign scenes.
+
+profiles:
+  auto:
+    advertised: true
+    route: auto
+    description: Automatically selects the assistant or storyteller profile.
+
+  assistant:
+    advertised: true
+    backend_model: gpt-oss-20b
+    description: Balanced general-purpose local assistant.
+    reasoning_effort: medium
+    system_prompt: |
+      You are a precise, candid, and practical private assistant. Prefer evidence and
+      explicit assumptions. Produce executable, testable technical guidance and call
+      out operational risks before destructive actions. Never claim tool access or
+      current information unless it was actually supplied to this request.
+    defaults:
+      temperature: 0.55
+      top_p: 0.9
+      min_p: 0.05
+      max_tokens: 8192
+    memory:
+      enabled: true
+      namespaces: [user, infrastructure, projects, general]
+
+  assistant-fast:
+    advertised: true
+    backend_model: gpt-oss-20b
+    description: Lower-latency assistant profile for routine interactions.
+    reasoning_effort: low
+    system_prompt: |
+      You are a precise, candid, and practical private assistant. Prefer evidence and
+      explicit assumptions. Produce executable, testable technical guidance and call
+      out operational risks before destructive actions. Never claim tool access or
+      current information unless it was actually supplied to this request.
+    defaults:
+      temperature: 0.45
+      top_p: 0.9
+      min_p: 0.05
+      max_tokens: 4096
+    memory:
+      enabled: true
+      namespaces: [user, infrastructure, projects, general]
+
+  assistant-deep:
+    advertised: true
+    backend_model: gpt-oss-20b
+    description: Higher-reasoning profile for difficult technical work.
+    reasoning_effort: high
+    system_prompt: |
+      You are a precise, candid, and practical private assistant. Prefer evidence and
+      explicit assumptions. Produce executable, testable technical guidance and call
+      out operational risks before destructive actions. Never claim tool access or
+      current information unless it was actually supplied to this request.
+    defaults:
+      temperature: 0.5
+      top_p: 0.9
+      min_p: 0.05
+      max_tokens: 16384
+    memory:
+      enabled: true
+      namespaces: [user, infrastructure, projects, general]
+
+  hermes-agent:
+    advertised: false
+    backend_model: gpt-oss-20b
+    description: High-reasoning GPT-OSS profile for Hermes Agent tool loops.
+    reasoning_effort: high
+    defaults:
+      temperature: 0.45
+      top_p: 0.9
+      min_p: 0.05
+      max_tokens: 16384
+    memory:
+      enabled: false
+
+  storyteller:
+    advertised: true
+    backend_model: stheno-8b
+    description: Creative writing, RPG scenes, character interaction, and worldbuilding.
+    system_prompt: |
+      You are a collaborative storyteller and game master. Maintain character voice,
+      continuity, stakes, and scene momentum. Distinguish established facts from new
+      inventions. Do not dictate the player's choices; present consequential situations
+      and let the player choose intent. Favor vivid but controlled prose over exposition.
+    defaults:
+      temperature: 1.3
+      top_p: 0.95
+      min_p: 0.15
+      repeat_penalty: 1.08
+      max_tokens: 8192
+    memory:
+      enabled: true
+      namespaces: [story, campaign]
+
+  gpt-oss-20b:
+    advertised: false
+    backend_model: gpt-oss-20b
+    description: Direct GPT-OSS access with minimal gateway prompting.
+    reasoning_effort: medium
+    defaults:
+      temperature: 0.55
+      top_p: 0.9
+      min_p: 0.05
+      max_tokens: 8192
+
+  stheno-8b:
+    advertised: false
+    backend_model: stheno-8b
+    description: Direct Stheno access with creative sampler defaults.
+    defaults:
+      temperature: 1.3
+      top_p: 0.95
+      min_p: 0.15
+      repeat_penalty: 1.08
+      max_tokens: 8192

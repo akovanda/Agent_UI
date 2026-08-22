@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-gateway-runtime
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+data:
+  profiles.json: |
+    {{- toPrettyJson .Values.hubProfiles | nindent 4 }}
+  catalog.resolved.json: |
+    {
+      "version": 1,
+      "models": {{ toJson .Values.models }},
+      "profiles": {{ toJson .Values.hubProfiles }}
+    }

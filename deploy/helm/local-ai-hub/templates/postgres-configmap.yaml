@@ -1,0 +1,17 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-postgres-init
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+data:
+  001-databases.sql: |
+    CREATE DATABASE local_ai_hub;
+    CREATE DATABASE open_webui;
+    \connect local_ai_hub
+    CREATE EXTENSION IF NOT EXISTS vector;
+    \connect open_webui
+    CREATE EXTENSION IF NOT EXISTS vector;
+{{- end }}

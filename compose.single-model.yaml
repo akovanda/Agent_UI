@@ -1,0 +1,37 @@
+# Pure-Compose fallback for llama.cpp router regressions. Overlay this file on
+# compose.yaml and select exactly one backend with ACTIVE_MODEL_* variables.
+services:
+  llama:
+    command:
+      - --model
+      - ${ACTIVE_MODEL_PATH:-/models/gpt-oss-20b.gguf}
+      - --alias
+      - ${ACTIVE_MODEL_ALIAS:-gpt-oss-20b}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - ${ACTIVE_MODEL_CONTEXT:-65536}
+      - --n-predict
+      - ${ACTIVE_MODEL_PREDICT:-8192}
+      - --n-gpu-layers
+      - auto
+      - --fit
+      - "on"
+      - --fit-target
+      - ${LLAMA_FIT_TARGET_MIB:-1024}
+      - --flash-attn
+      - auto
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --jinja
+      - --metrics
+      - --api-key
+      - ${LLAMA_API_KEY}
+  gateway:
+    environment:
+      MODEL_COORDINATOR_MODE: none
+      FIXED_BACKEND_MODEL: ${ACTIVE_MODEL_ALIAS:-gpt-oss-20b}

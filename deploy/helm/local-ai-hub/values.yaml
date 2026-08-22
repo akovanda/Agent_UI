@@ -1,0 +1,266 @@
+global:
+  existingSecret: local-ai-hub-secrets
+  imagePullPolicy: IfNotPresent
+  storageClass: ""
+  podAnnotations: {}
+
+models:
+  gpt-oss-20b:
+    enabled: true
+    filename: gpt-oss-20b.gguf
+    contextSize: 65536
+    gpuLayers: auto
+    cpuMoeLayers: 8
+    cacheTypeK: q8_0
+    cacheTypeV: q8_0
+  stheno-8b:
+    enabled: true
+    filename: Llama-3.1-8B-Stheno-v3.4.Q4_K_M.gguf
+    contextSize: 32768
+    gpuLayers: all
+    cpuMoeLayers: 0
+    cacheTypeK: q8_0
+    cacheTypeV: q8_0
+
+hubProfiles:
+  auto:
+    route: auto
+    description: Automatically selects the assistant or storyteller profile.
+  assistant:
+    model: gpt-oss-20b
+    description: Balanced general-purpose local assistant.
+    system_prompt: |
+      You are a precise, candid, and practical private assistant. Prefer evidence and
+      explicit assumptions. Produce executable, testable technical guidance and call
+      out operational risks before destructive actions. Never claim tool access or
+      current information unless it was actually supplied to this request.
+    temperature: 0.55
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 8192
+    reasoning_effort: medium
+    memory:
+      enabled: true
+      namespaces: [user, infrastructure, projects, general]
+  assistant-fast:
+    model: gpt-oss-20b
+    description: Lower-latency assistant profile for routine interactions.
+    system_prompt: |
+      You are a precise, candid, and practical private assistant. Prefer evidence and
+      explicit assumptions. Produce executable, testable technical guidance and call
+      out operational risks before destructive actions. Never claim tool access or
+      current information unless it was actually supplied to this request.
+    temperature: 0.45
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 4096
+    reasoning_effort: low
+    memory:
+      enabled: true
+      namespaces: [user, infrastructure, projects, general]
+  assistant-deep:
+    model: gpt-oss-20b
+    description: Higher-reasoning profile for difficult technical work.
+    system_prompt: |
+      You are a precise, candid, and practical private assistant. Prefer evidence and
+      explicit assumptions. Produce executable, testable technical guidance and call
+      out operational risks before destructive actions. Never claim tool access or
+      current information unless it was actually supplied to this request.
+    temperature: 0.5
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 16384
+    reasoning_effort: high
+    memory:
+      enabled: true
+      namespaces: [user, infrastructure, projects, general]
+  hermes-agent:
+    model: gpt-oss-20b
+    advertised: false
+    description: High-reasoning GPT-OSS profile for Hermes Agent tool loops.
+    temperature: 0.45
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 16384
+    reasoning_effort: high
+    memory:
+      enabled: false
+  storyteller:
+    model: stheno-8b
+    description: Creative writing, RPG, character, and worldbuilding profile.
+    system_prompt: |
+      You are a collaborative storyteller and game master. Maintain character voice,
+      continuity, stakes, and scene momentum. Distinguish established facts from new
+      inventions. Do not dictate the player's choices; present consequential situations
+      and let the player choose intent. Favor vivid but controlled prose over exposition.
+    temperature: 1.3
+    top_p: 0.95
+    min_p: 0.15
+    repeat_penalty: 1.08
+    max_tokens: 8192
+    reasoning_effort: none
+    memory:
+      enabled: true
+      namespaces: [story, campaign]
+  gpt-oss-20b:
+    model: gpt-oss-20b
+    advertised: false
+    description: Direct GPT-OSS access with minimal gateway prompting.
+    temperature: 0.55
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 8192
+    reasoning_effort: medium
+  stheno-8b:
+    model: stheno-8b
+    advertised: false
+    description: Direct Stheno access with creative sampler defaults.
+    temperature: 1.3
+    top_p: 0.95
+    min_p: 0.15
+    repeat_penalty: 1.08
+    max_tokens: 8192
+postgresql:
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: pg16
+  storage:
+    size: 20Gi
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+
+gateway:
+  replicaCount: 1
+  app: ""
+  image:
+    repository: local-ai-hub-gateway
+    tag: "0.2.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+
+llama:
+  image:
+    repository: ghcr.io/ggml-org/llama.cpp
+    tag: server-cuda
+  service:
+    type: ClusterIP
+    port: 8080
+  modelsMax: 1
+  fitTargetMiB: 1024
+  storage:
+    size: 50Gi
+    existingClaim: ""
+    accessModes: [ReadWriteOnce]
+  gpu:
+    resourceName: nvidia.com/gpu
+    count: 1
+  shmSize: 2Gi
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+    limits:
+      cpu: "24"
+      memory: 96Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+openWebUI:
+  enabled: true
+  image:
+    repository: ghcr.io/open-webui/open-webui
+    tag: main
+  service:
+    type: ClusterIP
+    port: 8080
+  signupEnabled: true
+  memoriesEnabled: false
+  storage:
+    size: 10Gi
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+sillyTavern:
+  enabled: true
+  image:
+    repository: ghcr.io/sillytavern/sillytavern
+    tag: latest
+  service:
+    type: ClusterIP
+    port: 8000
+  storage:
+    size: 10Gi
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+hermes:
+  enabled: false
+  image:
+    repository: nousresearch/hermes-agent
+    tag: latest
+  service:
+    type: ClusterIP
+    apiPort: 8642
+    dashboardPort: 9119
+  storage:
+    size: 10Gi
+    existingClaim: ""
+  dashboard:
+    enabled: true
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  openWebUI:
+    host: ai.example.internal
+    tlsSecret: ""
+  sillyTavern:
+    host: story.example.internal
+    tlsSecret: ""
+  hermes:
+    host: agent.example.internal
+    tlsSecret: ""
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  labels: {}
+
+networkPolicy:
+  enabled: false
