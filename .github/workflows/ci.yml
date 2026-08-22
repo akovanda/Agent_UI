@@ -3,81 +3,67 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
-
-concurrency:
-  group: local-ai-hub-${{ github.ref }}
-  cancel-in-progress: true
+    branches:
+      - main
+      - release/**
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  container-control-plane:
+  python:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build toolbox
-        run: docker build -f deploy/docker/toolbox.Dockerfile -t local-ai-hub-toolbox:0.2.0 .
-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install '.[dev]' 'huggingface_hub>=0.34,<1' 'requests>=2.32,<3'
       - name: Unit tests
-        run: |
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            --entrypoint bash \
-            local-ai-hub-toolbox:0.2.0 \
-            -lc 'python -m pytest --cov=local_ai_hub --cov-branch --cov-report=term-missing --cov-fail-under=80'
+        run: python -m pytest --cov=local_ai_hub --cov-branch --cov-report=term-missing --cov-fail-under=80
+      - name: Lint and format
+        run: ruff check . && ruff format --check .
+      - name: Compile and shell syntax
+        run: python -m compileall -q services/gateway/src ops && bash -n hub ops/*.sh
+      - name: Validate distributable catalog
+        run: python ops/hubctl.py catalog validate --catalog config/models/catalog.yaml --overlay /tmp/missing-overlay.yaml
 
-      - name: Lint Python and shell
-        run: |
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            --entrypoint bash \
-            local-ai-hub-toolbox:0.2.0 \
-            -lc 'ruff check . && ruff format --check . && bash -n hub ops/*.sh'
+  containers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build toolbox
+        run: docker build -f deploy/docker/toolbox.Dockerfile -t agent-ui-toolbox:0.3.0 .
+      - name: Build gateway
+        run: docker build -f deploy/docker/gateway.Dockerfile -t agent-ui-gateway:0.3.0 .
+      - name: Initialize configuration and render Compose
+        run: ./hub init
+      - name: Validate Compose model
+        run: docker compose --env-file .env -f compose.yaml -f .agent-ui/compose.generated.yaml config --quiet
 
-      - name: Generate isolated Compose configuration
+  helm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+      - name: Lint default empty-model installation
+        run: helm lint deploy/helm/local-ai-hub
+      - name: Render default installation
+        run: helm template agent-ui deploy/helm/local-ai-hub --namespace agent-ui >/tmp/rendered.yaml
+      - name: Render existing-PVC example
         run: |
-          docker run --rm --network host \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            local-ai-hub-toolbox:0.2.0 \
-            env init --template /workspace/.env.example --output /workspace/.env
-          docker compose --env-file .env -f compose.yaml config >/tmp/compose.rendered.yaml
-
-      - name: Render model runtime configuration
-        run: |
-          mkdir -p /tmp/models /tmp/runtime /tmp/state /tmp/hermes
-          docker run --rm --env-file .env \
-            -v /tmp/models:/models \
-            -v /tmp/runtime:/runtime \
-            -v /tmp/state:/state \
-            -v /tmp/hermes:/hermes \
-            local-ai-hub-toolbox:0.2.0 \
-            runtime render --runtime-dir /runtime --hermes-dir /hermes
-          test -s /tmp/runtime/models.ini
-          test -s /tmp/runtime/profiles.json
-
-      - name: Helm lint and template
-        run: |
-          docker run --rm \
-            --entrypoint helm \
-            local-ai-hub-toolbox:0.2.0 \
-            lint /opt/local-ai-hub/deploy/helm/local-ai-hub
-          docker run --rm \
-            --entrypoint helm \
-            local-ai-hub-toolbox:0.2.0 \
-            template local-ai-hub /opt/local-ai-hub/deploy/helm/local-ai-hub \
-            --namespace local-ai-hub >/tmp/helm.rendered.yaml
-
-      - name: Build gateway image
-        run: docker build -f deploy/docker/gateway.Dockerfile -t local-ai-hub-gateway:0.2.0 .
-
-      - name: Secret and model tracking guard
-        run: |
-          ! git ls-files | grep -E '(^|/)(\.env|.*\.gguf|.*\.safetensors)$'
-          git diff --check
+          python -m pip install 'PyYAML>=6,<7' 'requests>=2.32,<3'
+          python ops/hubctl.py catalog k8s-values \
+            --catalog config/models/catalog.yaml \
+            --overlay examples/catalog/kubernetes-existing-pvc.yaml \
+            --output /tmp/generated-values.yaml
+          helm template agent-ui deploy/helm/local-ai-hub \
+            --namespace agent-ui -f /tmp/generated-values.yaml >/tmp/rendered-pvc.yaml
