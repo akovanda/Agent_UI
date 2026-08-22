@@ -2,9 +2,11 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${LOCAL_AI_HUB_ENV_FILE:-$ROOT/.env}"
-COMPOSE_FILE="${LOCAL_AI_HUB_COMPOSE_FILE:-$ROOT/compose.yaml}"
-DEFAULT_TOOLBOX_IMAGE="local-ai-hub-toolbox:0.2.0"
+ENV_FILE="${AGENT_UI_ENV_FILE:-${LOCAL_AI_HUB_ENV_FILE:-$ROOT/.env}}"
+COMPOSE_FILE="${AGENT_UI_COMPOSE_FILE:-${LOCAL_AI_HUB_COMPOSE_FILE:-$ROOT/compose.yaml}}"
+GENERATED_DIR="$ROOT/.agent-ui"
+GENERATED_COMPOSE_FILE="$GENERATED_DIR/compose.generated.yaml"
+DEFAULT_TOOLBOX_IMAGE="agent-ui-toolbox:0.3.0"
 
 fail() {
   printf 'error: %s\n' "$*" >&2
@@ -38,11 +40,15 @@ toolbox_image() {
 compose() {
   require_docker
   [[ -f "$ENV_FILE" ]] || fail "Run ./hub init first"
-  docker compose \
-    --project-directory "$ROOT" \
-    --env-file "$ENV_FILE" \
-    -f "$COMPOSE_FILE" \
-    "$@"
+  local args=(
+    --project-directory "$ROOT"
+    --env-file "$ENV_FILE"
+    -f "$COMPOSE_FILE"
+  )
+  if [[ -s "$GENERATED_COMPOSE_FILE" ]]; then
+    args+=(-f "$GENERATED_COMPOSE_FILE")
+  fi
+  docker compose "${args[@]}" "$@"
 }
 
 build_toolbox() {
@@ -81,10 +87,10 @@ run_toolbox_root() {
 
 run_toolbox_all() {
   local model_volume runtime_volume state_volume hermes_volume
-  model_volume="$(env_value MODELS_VOLUME local-ai-hub-models)"
-  runtime_volume="$(env_value RUNTIME_CONFIG_VOLUME local-ai-hub-runtime-config)"
-  state_volume="$(env_value HUB_STATE_VOLUME local-ai-hub-state)"
-  hermes_volume="$(env_value HERMES_VOLUME local-ai-hub-hermes)"
+  model_volume="$(env_value MODELS_VOLUME agent-ui-models)"
+  runtime_volume="$(env_value RUNTIME_CONFIG_VOLUME agent-ui-runtime-config)"
+  state_volume="$(env_value HUB_STATE_VOLUME agent-ui-state)"
+  hermes_volume="$(env_value HERMES_VOLUME agent-ui-hermes)"
   docker run --rm \
     --network host \
     --env-file "$ENV_FILE" \
@@ -101,10 +107,10 @@ run_toolbox_all() {
 
 run_toolbox_volumes() {
   local model_volume runtime_volume state_volume hermes_volume
-  model_volume="$(env_value MODELS_VOLUME local-ai-hub-models)"
-  runtime_volume="$(env_value RUNTIME_CONFIG_VOLUME local-ai-hub-runtime-config)"
-  state_volume="$(env_value HUB_STATE_VOLUME local-ai-hub-state)"
-  hermes_volume="$(env_value HERMES_VOLUME local-ai-hub-hermes)"
+  model_volume="$(env_value MODELS_VOLUME agent-ui-models)"
+  runtime_volume="$(env_value RUNTIME_CONFIG_VOLUME agent-ui-runtime-config)"
+  state_volume="$(env_value HUB_STATE_VOLUME agent-ui-state)"
+  hermes_volume="$(env_value HERMES_VOLUME agent-ui-hermes)"
   docker run --rm \
     --env-file "$ENV_FILE" \
     ${HF_TOKEN:+-e HF_TOKEN} \
@@ -117,22 +123,26 @@ run_toolbox_volumes() {
 }
 
 render_runtime() {
-  run_toolbox_volumes runtime render \
-    --catalog /opt/local-ai-hub/config/models/catalog.yaml \
+  mkdir -p "$GENERATED_DIR"
+  run_toolbox_all runtime render \
+    --catalog /opt/agent-ui/config/models/catalog.yaml \
     --overlay /state/catalog.local.yaml \
     --models-dir /models \
     --runtime-dir /runtime \
-    --hermes-dir /hermes
+    --hermes-dir /hermes \
+    --compose-output /workspace/.agent-ui/compose.generated.yaml
 }
 
-reload_inference_if_running() {
-  if docker compose \
-      --project-directory "$ROOT" \
-      --env-file "$ENV_FILE" \
-      -f "$COMPOSE_FILE" \
-      ps --status running --services 2>/dev/null | grep -qx llama; then
-    compose restart llama >/dev/null
-    printf 'Restarted llama.cpp to apply the updated model catalog.\n'
+services_running() {
+  compose ps --status running --services 2>/dev/null || true
+}
+
+apply_runtime_if_running() {
+  local running
+  running="$(services_running)"
+  if grep -qx llama <<<"$running" || grep -qx gateway <<<"$running"; then
+    compose up -d --build --force-recreate config-init llama gateway
+    printf 'Recreated inference and gateway services with the updated catalog.\n'
   fi
 }
 
@@ -147,14 +157,20 @@ show_ports() {
   bind="$(env_value BIND_ADDRESS 127.0.0.1)"
   cat <<EOF
 Open WebUI:       http://${bind}:$(env_value OPEN_WEBUI_HOST_PORT)
-SillyTavern:      http://${bind}:$(env_value SILLYTAVERN_HOST_PORT)
+Story UI:         http://${bind}:$(env_value SILLYTAVERN_HOST_PORT)  (start with --story)
 Gateway API:      http://${bind}:$(env_value GATEWAY_HOST_PORT)/v1
+Setup status:     http://${bind}:$(env_value GATEWAY_HOST_PORT)/api/setup/status
 llama.cpp API:    http://${bind}:$(env_value LLAMA_HOST_PORT)/v1
 PostgreSQL:       ${bind}:$(env_value POSTGRES_HOST_PORT)
-Hermes API:       http://${bind}:$(env_value HERMES_API_HOST_PORT)/v1
+Hermes API:       http://${bind}:$(env_value HERMES_API_HOST_PORT)/v1  (start with --agent)
 Hermes dashboard: http://${bind}:$(env_value HERMES_DASHBOARD_HOST_PORT)
 Prometheus:       http://${bind}:$(env_value PROMETHEUS_HOST_PORT)
 EOF
+}
+
+absolute_path() {
+  local path="$1"
+  printf '%s/%s' "$(cd "$(dirname "$path")" && pwd)" "$(basename "$path")"
 }
 
 model_command() {
@@ -165,18 +181,17 @@ model_command() {
       run_toolbox_volumes model list "$@"
       ;;
     import)
-      local model_id="${1:-}"
-      local source="${2:-}"
+      local model_id="${1:-}" source="${2:-}"
       [[ -n "$model_id" && -n "$source" ]] || \
         fail "usage: ./hub model import MODEL_ID /path/to/model.gguf [--force]"
       shift 2
-      source="$(cd "$(dirname "$source")" && pwd)/$(basename "$source")"
+      source="$(absolute_path "$source")"
       [[ -f "$source" ]] || fail "Model file does not exist: $source"
       local source_dir source_name model_volume state_volume
       source_dir="$(dirname "$source")"
       source_name="$(basename "$source")"
-      model_volume="$(env_value MODELS_VOLUME local-ai-hub-models)"
-      state_volume="$(env_value HUB_STATE_VOLUME local-ai-hub-state)"
+      model_volume="$(env_value MODELS_VOLUME agent-ui-models)"
+      state_volume="$(env_value HUB_STATE_VOLUME agent-ui-state)"
       docker run --rm \
         --env-file "$ENV_FILE" \
         -v "$source_dir:/incoming:ro" \
@@ -185,7 +200,7 @@ model_command() {
         "$(toolbox_image)" \
         model import "$model_id" --source "/incoming/$source_name" "$@"
       render_runtime
-      reload_inference_if_running
+      apply_runtime_if_running
       ;;
     fetch)
       local model_id="${1:-}"
@@ -193,7 +208,7 @@ model_command() {
       shift
       run_toolbox_volumes model fetch "$model_id" "$@"
       render_runtime
-      reload_inference_if_running
+      apply_runtime_if_running
       ;;
     verify)
       local model_id="${1:-}"
@@ -207,21 +222,91 @@ model_command() {
       shift
       run_toolbox_volumes model remove "$model_id" "$@"
       render_runtime
-      reload_inference_if_running
+      apply_runtime_if_running
       ;;
     register)
       local model_id="${1:-}"
-      [[ -n "$model_id" ]] || fail "usage: ./hub model register MODEL_ID --filename FILE.gguf [options]"
+      [[ -n "$model_id" ]] || fail "usage: ./hub model register MODEL_ID [options]"
       shift
       run_toolbox_volumes model register "$model_id" "$@"
       render_runtime
-      reload_inference_if_running
+      apply_runtime_if_running
+      ;;
+    link)
+      local model_id="${1:-}" source="${2:-}"
+      [[ -n "$model_id" && -n "$source" ]] || \
+        fail "usage: ./hub model link MODEL_ID /existing/model-or-directory [register options]"
+      shift 2
+      source="$(absolute_path "$source")"
+      [[ -e "$source" ]] || fail "External model path does not exist: $source"
+      run_toolbox_volumes model register "$model_id" \
+        --source-kind host_path --path "$source" "$@"
+      render_runtime
+      apply_runtime_if_running
+      ;;
+    discover)
+      local source="${1:-}"
+      [[ -n "$source" ]] || fail "usage: ./hub model discover /path [options]"
+      shift
+      source="$(absolute_path "$source")"
+      [[ -e "$source" ]] || fail "Discovery path does not exist: $source"
+      local model_volume state_volume
+      model_volume="$(env_value MODELS_VOLUME agent-ui-models)"
+      state_volume="$(env_value HUB_STATE_VOLUME agent-ui-state)"
+      docker run --rm \
+        --env-file "$ENV_FILE" \
+        -v "$source:$source:ro" \
+        -v "$model_volume:/models" \
+        -v "$state_volume:/state" \
+        "$(toolbox_image)" \
+        model discover "$source" "$@"
       ;;
     render)
       render_runtime
       ;;
     *)
-      fail "model command must be one of: list, import, fetch, verify, remove, register, render"
+      fail "model command must be one of: list, import, fetch, verify, remove, register, link, discover, render"
+      ;;
+  esac
+}
+
+catalog_command() {
+  local subcommand="${1:-}"
+  shift || true
+  case "$subcommand" in
+    apply|plan|validate)
+      local file="${1:-}"
+      [[ -n "$file" ]] || fail "usage: ./hub catalog $subcommand FILE [options]"
+      shift
+      file="$(absolute_path "$file")"
+      [[ -f "$file" ]] || fail "Catalog file does not exist: $file"
+      local file_dir state_volume model_volume runtime_volume hermes_volume
+      file_dir="$(dirname "$file")"
+      state_volume="$(env_value HUB_STATE_VOLUME agent-ui-state)"
+      model_volume="$(env_value MODELS_VOLUME agent-ui-models)"
+      runtime_volume="$(env_value RUNTIME_CONFIG_VOLUME agent-ui-runtime-config)"
+      hermes_volume="$(env_value HERMES_VOLUME agent-ui-hermes)"
+      local command=(catalog "$subcommand" --file "$file")
+      [[ "$subcommand" == plan ]] && command=(catalog apply --file "$file" --dry-run --json)
+      docker run --rm \
+        --env-file "$ENV_FILE" \
+        -v "$file_dir:$file_dir:ro" \
+        -v "$state_volume:/state" \
+        -v "$model_volume:/models" \
+        -v "$runtime_volume:/runtime" \
+        -v "$hermes_volume:/hermes" \
+        "$(toolbox_image)" \
+        "${command[@]}" "$@"
+      if [[ "$subcommand" == apply ]]; then
+        render_runtime
+        apply_runtime_if_running
+      fi
+      ;;
+    show)
+      run_toolbox_volumes catalog show "$@"
+      ;;
+    *)
+      fail "catalog command must be one of: apply, plan, validate, show"
       ;;
   esac
 }
@@ -241,24 +326,22 @@ run_kube_toolbox() {
 k8s_command() {
   local subcommand="${1:-}"
   shift || true
-  local namespace="${LOCAL_AI_HUB_NAMESPACE:-local-ai-hub}"
-  local release="${LOCAL_AI_HUB_RELEASE:-local-ai-hub}"
+  local namespace="${AGENT_UI_NAMESPACE:-${LOCAL_AI_HUB_NAMESPACE:-agent-ui}}"
+  local release="${AGENT_UI_RELEASE:-${LOCAL_AI_HUB_RELEASE:-agent-ui}}"
+  mkdir -p "$GENERATED_DIR"
   case "$subcommand" in
-    render)
+    render|install|upgrade)
       run_toolbox_all catalog k8s-values \
-        --catalog /opt/local-ai-hub/config/models/catalog.yaml \
+        --catalog /opt/agent-ui/config/models/catalog.yaml \
         --overlay /state/catalog.local.yaml \
-        --output /workspace/.local-ai-hub-k8s-models.yaml
-      run_kube_toolbox -lc \
-        "helm template '$release' /opt/local-ai-hub/deploy/helm/local-ai-hub --namespace '$namespace' -f /workspace/.local-ai-hub-k8s-models.yaml $*"
-      ;;
-    install|upgrade)
-      run_toolbox_all catalog k8s-values \
-        --catalog /opt/local-ai-hub/config/models/catalog.yaml \
-        --overlay /state/catalog.local.yaml \
-        --output /workspace/.local-ai-hub-k8s-models.yaml
-      run_kube_toolbox /opt/local-ai-hub/ops/k8s-install.sh \
-        "$release" "$namespace" /workspace/.env /workspace/.local-ai-hub-k8s-models.yaml "$@"
+        --output /workspace/.agent-ui/k8s.generated.yaml
+      if [[ "$subcommand" == render ]]; then
+        run_kube_toolbox -lc \
+          "helm template '$release' /opt/agent-ui/deploy/helm/local-ai-hub --namespace '$namespace' -f /workspace/.agent-ui/k8s.generated.yaml $*"
+      else
+        run_kube_toolbox /opt/agent-ui/ops/k8s-install.sh \
+          "$release" "$namespace" /workspace/.env /workspace/.agent-ui/k8s.generated.yaml "$@"
+      fi
       ;;
     uninstall)
       run_kube_toolbox -lc "helm uninstall '$release' --namespace '$namespace' $*"
@@ -268,25 +351,21 @@ k8s_command() {
         "helm status '$release' --namespace '$namespace'; kubectl -n '$namespace' get pods,svc,pvc"
       ;;
     model-import)
-      local model_id="${1:-}"
-      local source="${2:-}"
+      local model_id="${1:-}" source="${2:-}"
       [[ -n "$model_id" && -n "$source" ]] || \
         fail "usage: ./hub k8s model-import MODEL_ID /path/to/model.gguf"
       shift 2
-      source="$(cd "$(dirname "$source")" && pwd)/$(basename "$source")"
+      source="$(absolute_path "$source")"
       [[ -f "$source" ]] || fail "Model file does not exist: $source"
-      local source_dir source_name destination_name
+      local source_dir source_name destination_name args=()
       source_dir="$(dirname "$source")"
       source_name="$(basename "$source")"
       destination_name="$(run_toolbox_volumes model filename "$model_id")"
-      local args=()
       while IFS= read -r item; do args+=("$item"); done < <(kube_mount_args)
       docker run --rm "${args[@]}" \
         -v "$source_dir:/incoming:ro" \
-        -w /workspace \
-        --entrypoint bash \
-        "$(toolbox_image)" \
-        /opt/local-ai-hub/ops/k8s-model-import.sh \
+        -w /workspace --entrypoint bash "$(toolbox_image)" \
+        /opt/agent-ui/ops/k8s-model-import.sh \
         "$release" "$namespace" "$model_id" "/incoming/$source_name" "$destination_name" "$@"
       ;;
     shell)
@@ -299,28 +378,20 @@ k8s_command() {
 }
 
 archive_volume() {
-  local volume_name="$1"
-  local destination_dir="$2"
-  local archive_name="$3"
+  local volume_name="$1" destination_dir="$2" archive_name="$3"
   docker run --rm \
-    -v "$volume_name:/source:ro" \
-    -v "$destination_dir:/backup" \
-    --entrypoint bash \
-    "$(toolbox_image)" \
+    -v "$volume_name:/source:ro" -v "$destination_dir:/backup" \
+    --entrypoint bash "$(toolbox_image)" \
     -lc "tar -czf '/backup/$archive_name' -C /source ."
 }
 
 restore_volume_archive() {
-  local volume_name="$1"
-  local source_dir="$2"
-  local archive_name="$3"
+  local volume_name="$1" source_dir="$2" archive_name="$3"
   [[ -f "$source_dir/$archive_name" ]] || return 0
   docker volume create "$volume_name" >/dev/null
   docker run --rm \
-    -v "$volume_name:/target" \
-    -v "$source_dir:/backup:ro" \
-    --entrypoint bash \
-    "$(toolbox_image)" \
+    -v "$volume_name:/target" -v "$source_dir:/backup:ro" \
+    --entrypoint bash "$(toolbox_image)" \
     -lc "find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; tar -xzf '/backup/$archive_name' -C /target"
 }
 
@@ -328,63 +399,27 @@ backup_command() {
   ensure_initialized
   build_toolbox
   create_volumes
-  local target=""
-  local include_models=false
+  local target="" include_models=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --include-models) include_models=true ;;
-      *)
-        [[ -z "$target" ]] || fail "Only one backup destination may be supplied"
-        target="$1"
-        ;;
+      *) [[ -z "$target" ]] || fail "Only one backup destination may be supplied"; target="$1" ;;
     esac
     shift
   done
-  if [[ -z "$target" ]]; then
-    target="$ROOT/backups/$(date -u +%Y%m%dT%H%M%SZ)"
-  fi
+  [[ -n "$target" ]] || target="$ROOT/backups/$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -p "$target"
   target="$(cd "$target" && pwd)"
   chmod 0700 "$target"
-
-  local running
-  running="$(compose ps --status running --services 2>/dev/null || true)"
-  if ! grep -qx postgres <<<"$running"; then
-    compose up -d postgres
-    for _ in $(seq 1 60); do
-      if compose exec -T postgres pg_isready -U "$(env_value POSTGRES_USER)" -d postgres >/dev/null 2>&1; then
-        break
-      fi
-      sleep 2
-    done
-  fi
-
-  local quiesced=()
-  local service
-  for service in gateway open-webui sillytavern hermes; do
-    if grep -qx "$service" <<<"$running"; then
-      quiesced+=("$service")
-    fi
+  compose up -d postgres
+  for _ in $(seq 1 90); do
+    compose exec -T postgres pg_isready -U "$(env_value POSTGRES_USER)" -d postgres >/dev/null 2>&1 && break
+    sleep 2
   done
-  if ((${#quiesced[@]})); then
-    compose stop "${quiesced[@]}"
-  fi
-  restart_quiesced() {
-    if ((${#quiesced[@]})); then
-      compose start "${quiesced[@]}" >/dev/null 2>&1 || true
-    fi
-  }
-  trap restart_quiesced EXIT
-
-  compose exec -T postgres pg_dump \
-    -Fc -U "$(env_value POSTGRES_USER)" -d local_ai_hub \
-    > "$target/local_ai_hub.dump"
-  compose exec -T postgres pg_dump \
-    -Fc -U "$(env_value POSTGRES_USER)" -d open_webui \
-    > "$target/open_webui.dump"
-
+  compose exec -T postgres pg_dump -Fc -U "$(env_value POSTGRES_USER)" -d local_ai_hub > "$target/agent_ui.dump"
+  compose exec -T postgres pg_dump -Fc -U "$(env_value POSTGRES_USER)" -d open_webui > "$target/open_webui.dump"
   local pairs=(
-    "HUB_STATE_VOLUME:hub-state.tar.gz"
+    "HUB_STATE_VOLUME:catalog-state.tar.gz"
     "GATEWAY_STATE_VOLUME:gateway-state.tar.gz"
     "OPEN_WEBUI_VOLUME:open-webui-data.tar.gz"
     "SILLYTAVERN_CONFIG_VOLUME:sillytavern-config.tar.gz"
@@ -395,49 +430,40 @@ backup_command() {
   )
   local pair key archive
   for pair in "${pairs[@]}"; do
-    key="${pair%%:*}"
-    archive="${pair#*:}"
+    key="${pair%%:*}"; archive="${pair#*:}"
     archive_volume "$(env_value "$key")" "$target" "$archive"
   done
   if [[ "$include_models" == true ]]; then
-    archive_volume "$(env_value MODELS_VOLUME)" "$target" models.tar.gz
+    archive_volume "$(env_value MODELS_VOLUME)" "$target" managed-models.tar.gz
   fi
-
   cp "$ENV_FILE" "$target/environment.env"
   chmod 0600 "$target/environment.env"
   cat > "$target/manifest.txt" <<EOF
-version=0.2.0
+version=0.3.0
 created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-compose_project=$(env_value COMPOSE_PROJECT_NAME local-ai-hub)
-models_included=$include_models
+compose_project=$(env_value COMPOSE_PROJECT_NAME agent-ui)
+managed_models_included=$include_models
+external_model_sources_included=false
 EOF
   docker run --rm -v "$target:/backup" --entrypoint bash "$(toolbox_image)" \
     -lc 'cd /backup && sha256sum -- * > SHA256SUMS && chmod 0600 SHA256SUMS'
-  docker run --rm -v "$target:/backup" --entrypoint chown "$(toolbox_image)" \
-    -R "$(id -u):$(id -g)" /backup
-  restart_quiesced
-  trap - EXIT
   printf 'Backup created: %s\n' "$target"
-  printf 'The backup contains plaintext deployment secrets; protect it accordingly.\n'
+  printf 'External host paths and external Docker volumes are catalog references, not copied data.\n'
 }
 
 restore_command() {
   ensure_initialized
   build_toolbox
-  local source="${1:-}"
-  local confirmation="${2:-}"
-  [[ -n "$source" && "$confirmation" == "--yes" ]] || \
-    fail "usage: ./hub restore /path/to/backup --yes"
+  local source="${1:-}" confirmation="${2:-}"
+  [[ -n "$source" && "$confirmation" == "--yes" ]] || fail "usage: ./hub restore DIR --yes"
   source="$(cd "$source" && pwd)"
   [[ -f "$source/SHA256SUMS" ]] || fail "Backup checksum manifest is missing"
   docker run --rm -v "$source:/backup:ro" --entrypoint bash "$(toolbox_image)" \
     -lc 'cd /backup && sha256sum -c SHA256SUMS'
-
   compose down --remove-orphans || true
   create_volumes
-
   local pairs=(
-    "HUB_STATE_VOLUME:hub-state.tar.gz"
+    "HUB_STATE_VOLUME:catalog-state.tar.gz"
     "GATEWAY_STATE_VOLUME:gateway-state.tar.gz"
     "OPEN_WEBUI_VOLUME:open-webui-data.tar.gz"
     "SILLYTAVERN_CONFIG_VOLUME:sillytavern-config.tar.gz"
@@ -445,79 +471,68 @@ restore_command() {
     "SILLYTAVERN_PLUGINS_VOLUME:sillytavern-plugins.tar.gz"
     "SILLYTAVERN_EXTENSIONS_VOLUME:sillytavern-extensions.tar.gz"
     "HERMES_VOLUME:hermes-data.tar.gz"
-    "MODELS_VOLUME:models.tar.gz"
+    "MODELS_VOLUME:managed-models.tar.gz"
   )
   local pair key archive
   for pair in "${pairs[@]}"; do
-    key="${pair%%:*}"
-    archive="${pair#*:}"
+    key="${pair%%:*}"; archive="${pair#*:}"
     restore_volume_archive "$(env_value "$key")" "$source" "$archive"
   done
-
   local postgres_volume
   postgres_volume="$(env_value POSTGRES_VOLUME)"
   docker volume rm -f "$postgres_volume" >/dev/null 2>&1 || true
   docker volume create "$postgres_volume" >/dev/null
   compose up -d postgres
-  local ready=false
   for _ in $(seq 1 90); do
-    if compose exec -T postgres pg_isready -U "$(env_value POSTGRES_USER)" -d postgres >/dev/null 2>&1; then
-      ready=true
-      break
-    fi
+    compose exec -T postgres pg_isready -U "$(env_value POSTGRES_USER)" -d postgres >/dev/null 2>&1 && break
     sleep 2
   done
-  [[ "$ready" == true ]] || fail "PostgreSQL did not become ready during restore"
-
-  compose exec -T postgres pg_restore \
-    --clean --if-exists --no-owner \
-    -U "$(env_value POSTGRES_USER)" -d local_ai_hub \
-    < "$source/local_ai_hub.dump"
-  compose exec -T postgres pg_restore \
-    --clean --if-exists --no-owner \
-    -U "$(env_value POSTGRES_USER)" -d open_webui \
-    < "$source/open_webui.dump"
-
+  compose exec -T postgres pg_restore --clean --if-exists --no-owner \
+    -U "$(env_value POSTGRES_USER)" -d local_ai_hub < "$source/agent_ui.dump"
+  compose exec -T postgres pg_restore --clean --if-exists --no-owner \
+    -U "$(env_value POSTGRES_USER)" -d open_webui < "$source/open_webui.dump"
   render_runtime
   compose up -d --build
-  printf 'Restore completed. Run ./hub smoke and verify both interfaces.\n'
+  printf 'Restore completed. Verify every external model path or volume, then run ./hub smoke.\n'
 }
 
 usage() {
   cat <<'EOF'
-Local AI Hub — pure Docker control plane
+Agent UI 0.3 — generic local AI control plane
 
 Usage: ./hub COMMAND [arguments]
 
 Core:
   init [--reallocate-ports] [--rotate-secrets]
-  up [--agent] [--observability]
+  up [--story] [--agent] [--observability]
   down | restart | status | logs [service] | ports
   doctor [--gpu] | smoke | test | lint
-  switch-regression [ITERATIONS] | benchmark [RUNS]
-  backup [DIR] [--include-models]
-  restore DIR --yes
-  compose ARGS...        Pass through to docker compose
-  shell                  Open a toolbox shell
+  backup [DIR] [--include-models] | restore DIR --yes
+  compose ARGS... | shell | version
+
+AI-first catalog:
+  catalog plan FILE [options]       Validate and show the resulting resource set
+  catalog apply FILE [options]      Merge a version-2 YAML overlay and regenerate runtime
+  catalog validate FILE
+  catalog show [--json]
 
 Models:
   model list
-  model import MODEL_ID /path/to/model.gguf [--force]
-  model fetch MODEL_ID [--repository REPO --file FILE | --url URL]
-  model verify MODEL_ID [--sha256 HASH]
-  model register MODEL_ID --filename FILE.gguf [options]
-  model remove MODEL_ID --yes
+  model discover PATH [--recursive] [--capability NAME]
+  model link ID EXISTING_PATH --capability NAME [options]
+  model register ID --backend ID --capability NAME [options]
+  model import ID FILE.gguf          Copy only a model declared artifact.kind=managed
+  model fetch ID [--repository REPO --file FILE | --url URL]
+  model verify ID [--sha256 HASH]
+  model remove ID --yes
   model render
 
 Kubernetes:
-  k8s render [helm flags]
-  k8s install [helm flags]
-  k8s upgrade [helm flags]
-  k8s status | k8s uninstall
-  k8s model-import MODEL_ID /path/to/model.gguf
+  k8s render | install | upgrade | status | uninstall
+  k8s model-import ID FILE.gguf
 
 Destructive:
-  destroy --yes          Remove containers and all managed volumes
+  destroy --yes
 EOF
 }
 
@@ -528,13 +543,10 @@ main() {
     init)
       require_docker
       build_toolbox
-      run_toolbox_root env init \
-        --template /workspace/.env.example \
-        --output /workspace/.env \
-        "$@"
+      run_toolbox_root env init --template /workspace/.env.example --output /workspace/.env "$@"
       create_volumes
       render_runtime
-      printf '\nInitialization complete. Import models, then run ./hub up.\n'
+      printf '\nInitialization complete. Register a model or endpoint, then run ./hub up.\n'
       show_ports
       ;;
     up)
@@ -542,6 +554,7 @@ main() {
       local profiles=()
       while [[ $# -gt 0 ]]; do
         case "$1" in
+          --story) profiles+=(--profile story) ;;
           --agent) profiles+=(--profile agent) ;;
           --observability) profiles+=(--profile observability) ;;
           *) fail "Unknown up option: $1" ;;
@@ -553,110 +566,62 @@ main() {
       compose "${profiles[@]}" up -d --build
       show_ports
       ;;
-    down)
-      compose down "$@"
-      ;;
-    restart)
-      compose restart "$@"
-      ;;
-    status|ps)
-      compose ps "$@"
-      ;;
-    logs)
-      compose logs --follow --tail=200 "$@"
-      ;;
-    ports)
-      ensure_initialized
-      show_ports
-      ;;
-    compose)
-      compose "$@"
-      ;;
-    model)
-      ensure_initialized
-      build_toolbox
-      create_volumes
-      model_command "$@"
-      ;;
+    down) compose down "$@" ;;
+    restart) compose restart "$@" ;;
+    status|ps) compose ps "$@" ;;
+    logs) compose logs --follow --tail=200 "$@" ;;
+    ports) ensure_initialized; show_ports ;;
+    compose) compose "$@" ;;
+    model) ensure_initialized; build_toolbox; create_volumes; model_command "$@" ;;
+    catalog) ensure_initialized; build_toolbox; create_volumes; catalog_command "$@" ;;
     doctor)
       ensure_initialized
       build_toolbox
-      run_toolbox_all doctor \
-        --env-file /workspace/.env \
-        --catalog /opt/local-ai-hub/config/models/catalog.yaml \
-        --overlay /state/catalog.local.yaml
+      run_toolbox_all doctor --env-file /workspace/.env \
+        --catalog /opt/agent-ui/config/models/catalog.yaml --overlay /state/catalog.local.yaml
       docker compose version
       if [[ "${1:-}" == "--gpu" ]]; then
         docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
       fi
       ;;
-    smoke)
-      compose run --rm --no-deps --entrypoint bash toolbox /opt/local-ai-hub/ops/smoke.sh
-      ;;
-    switch-regression)
-      compose run --rm --no-deps --entrypoint bash toolbox \
-        /opt/local-ai-hub/ops/switch-regression.sh "${1:-25}"
-      ;;
-    benchmark)
-      compose run --rm --no-deps --entrypoint bash toolbox \
-        /opt/local-ai-hub/ops/benchmark.sh "${1:-3}"
-      ;;
+    smoke) compose run --rm --no-deps --entrypoint bash toolbox /opt/agent-ui/ops/smoke.sh ;;
+    switch-regression) compose run --rm --no-deps --entrypoint bash toolbox /opt/agent-ui/ops/switch-regression.sh "${1:-25}" ;;
+    benchmark) compose run --rm --no-deps --entrypoint bash toolbox /opt/agent-ui/ops/benchmark.sh "${1:-3}" ;;
     test)
       build_toolbox
       docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-        -v "$ROOT:/workspace" -w /workspace \
-        --entrypoint bash "$(toolbox_image)" \
+        -v "$ROOT:/workspace" -w /workspace --entrypoint bash "$(toolbox_image)" \
         -lc 'python -m pytest --cov=local_ai_hub --cov-branch --cov-report=term-missing --cov-fail-under=80 && python -m compileall -q services/gateway/src ops'
       ;;
     lint)
       build_toolbox
       docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-        -v "$ROOT:/workspace" -w /workspace \
-        --entrypoint bash "$(toolbox_image)" \
+        -v "$ROOT:/workspace" -w /workspace --entrypoint bash "$(toolbox_image)" \
         -lc 'ruff check . && ruff format --check . && bash -n hub ops/*.sh'
       ;;
     shell)
-      ensure_initialized
-      build_toolbox
-      docker run --rm -it --env-file "$ENV_FILE" \
-        -v "$ROOT:/workspace" -w /workspace \
-        --entrypoint bash "$(toolbox_image)"
+      ensure_initialized; build_toolbox
+      docker run --rm -it --env-file "$ENV_FILE" -v "$ROOT:/workspace" \
+        -w /workspace --entrypoint bash "$(toolbox_image)"
       ;;
-    k8s)
-      ensure_initialized
-      build_toolbox
-      k8s_command "$@"
-      ;;
-    backup)
-      backup_command "$@"
-      ;;
-    restore)
-      restore_command "$@"
-      ;;
+    k8s) ensure_initialized; build_toolbox; k8s_command "$@" ;;
+    backup) backup_command "$@" ;;
+    restore) restore_command "$@" ;;
+    version) cat "$ROOT/VERSION" ;;
     destroy)
       [[ "${1:-}" == "--yes" ]] || fail "destroy requires --yes"
       ensure_initialized
       compose down --remove-orphans || true
-      local keys=(
-        POSTGRES_VOLUME MODELS_VOLUME RUNTIME_CONFIG_VOLUME HUB_STATE_VOLUME
-        GATEWAY_STATE_VOLUME OPEN_WEBUI_VOLUME SILLYTAVERN_CONFIG_VOLUME
-        SILLYTAVERN_DATA_VOLUME SILLYTAVERN_PLUGINS_VOLUME
-        SILLYTAVERN_EXTENSIONS_VOLUME HERMES_VOLUME PROMETHEUS_VOLUME
-      )
+      local keys=(POSTGRES_VOLUME MODELS_VOLUME RUNTIME_CONFIG_VOLUME HUB_STATE_VOLUME GATEWAY_STATE_VOLUME OPEN_WEBUI_VOLUME SILLYTAVERN_CONFIG_VOLUME SILLYTAVERN_DATA_VOLUME SILLYTAVERN_PLUGINS_VOLUME SILLYTAVERN_EXTENSIONS_VOLUME HERMES_VOLUME PROMETHEUS_VOLUME)
       local key name
       for key in "${keys[@]}"; do
-        name="$(env_value "$key")"
-        [[ -n "$name" ]] && docker volume rm -f "$name" >/dev/null || true
+        name="$(env_value "$key")"; [[ -n "$name" ]] && docker volume rm -f "$name" >/dev/null || true
       done
-      printf 'Removed Local AI Hub containers and managed volumes.\n'
+      rm -rf "$GENERATED_DIR"
+      printf 'Removed Agent UI containers, generated files, and managed volumes.\n'
       ;;
-    help|-h|--help)
-      usage
-      ;;
-    *)
-      usage >&2
-      fail "Unknown command: $command"
-      ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; fail "Unknown command: $command" ;;
   esac
 }
 
