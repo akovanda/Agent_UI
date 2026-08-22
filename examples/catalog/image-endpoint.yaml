@@ -1,0 +1,28 @@
+version: 2
+backends:
+  image-api:
+    kind: openai-compatible
+    enabled: true
+    description: Local or remote OpenAI-compatible image generation service.
+    base_url_env: IMAGE_API_BASE_URL
+    api_key_env: IMAGE_API_KEY
+    coordinator: none
+    serialize_requests: false
+    endpoints:
+      image: /v1/images/generations
+models:
+  image-generator:
+    display_name: Local Image Generator
+    backend: image-api
+    upstream_model: model-name-exposed-by-image-service
+    priority: 100
+    capabilities:
+      image:
+        sizes: [512x512, 1024x1024]
+    artifact:
+      kind: none
+experiences:
+  image:
+    advertised: true
+    capability: image
+    description: Generate images through the registered image service.
