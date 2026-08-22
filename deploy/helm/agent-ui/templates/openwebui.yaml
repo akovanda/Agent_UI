@@ -1,0 +1,121 @@
+{{- if .Values.openWebUI.enabled }}
+{{- if and .Values.openWebUI.persistence.enabled (not .Values.openWebUI.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-openwebui
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.openWebUI.persistence.accessModes | nindent 4 }}
+  {{- if .Values.openWebUI.persistence.storageClassName }}
+  storageClassName: {{ .Values.openWebUI.persistence.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.openWebUI.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-openwebui
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openwebui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agent-ui.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: openwebui
+  template:
+    metadata:
+      labels:
+        {{- include "agent-ui.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: openwebui
+    spec:
+      containers:
+        - name: openwebui
+          image: "{{ .Values.openWebUI.image.repository }}:{{ .Values.openWebUI.image.tag }}"
+          imagePullPolicy: {{ .Values.openWebUI.image.pullPolicy }}
+          env:
+            - name: ENABLE_OLLAMA_API
+              value: "false"
+            - name: ENABLE_OPENAI_API
+              value: "true"
+            - name: OPENAI_API_BASE_URL
+              value: http://{{ include "agent-ui.fullname" . }}-gateway:{{ .Values.gateway.service.port }}/v1
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agent-ui.secretName" . }}
+                  key: gateway-api-key
+            - name: WEBUI_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agent-ui.secretName" . }}
+                  key: webui-secret-key
+            - name: ENABLE_SIGNUP
+              value: {{ .Values.openWebUI.enableSignup | quote }}
+            - name: ENABLE_MEMORIES
+              value: "true"
+            - name: ENABLE_IMAGE_GENERATION
+              value: {{ .Values.openWebUI.enableImageGeneration | quote }}
+            - name: IMAGE_GENERATION_ENGINE
+              value: openai
+            - name: IMAGES_OPENAI_API_BASE_URL
+              value: http://{{ include "agent-ui.fullname" . }}-gateway:{{ .Values.gateway.service.port }}/v1
+            - name: IMAGES_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agent-ui.secretName" . }}
+                  key: gateway-api-key
+            - name: IMAGE_GENERATION_MODEL
+              value: image
+            - name: ENABLE_VERSION_UPDATE_CHECK
+              value: "false"
+            - name: DO_NOT_TRACK
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.openWebUI.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+      volumes:
+        - name: data
+          {{- if .Values.openWebUI.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.openWebUI.persistence.existingClaim | default (printf "%s-openwebui" (include "agent-ui.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-openwebui
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openwebui
+spec:
+  type: {{ .Values.openWebUI.service.type }}
+  selector:
+    {{- include "agent-ui.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: openwebui
+  ports:
+    - name: http
+      port: {{ .Values.openWebUI.service.port }}
+      targetPort: http
+{{- end }}
