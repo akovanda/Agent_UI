@@ -1,4 +1,4 @@
-{{- if not .Values.llama.storage.existingClaim }}
+{{- if and .Values.llama.enabled (not .Values.llama.storage.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -9,7 +9,7 @@ metadata:
 spec:
   accessModes:
     {{- toYaml .Values.llama.storage.accessModes | nindent 4 }}
-  {{- include "local-ai-hub.storageClass" . | nindent 2 }}
+  {{- include "local-ai-hub.storageClass" .Values.llama.storage | nindent 2 }}
   resources:
     requests:
       storage: {{ .Values.llama.storage.size }}

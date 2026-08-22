@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -10,9 +11,9 @@ from .config import Backend, ProfileDocument, Settings
 from .coordinator import LlamaModelCoordinator
 from .gpu import GpuGate
 
-
 _DEFAULT_ENDPOINTS = {
     "chat": "/v1/chat/completions",
+    "responses": "/v1/responses",
     "completions": "/v1/completions",
     "infill": "/infill",
     "embeddings": "/v1/embeddings",
@@ -33,8 +34,8 @@ class BackendRuntime:
     def url_for(self, operation: str) -> str:
         endpoint = self.spec.endpoints.get(operation) or _DEFAULT_ENDPOINTS[operation]
         base = self.base_url.rstrip("/")
-        if base.endswith("/v1") and endpoint.startswith("/v1/"):
-            endpoint = endpoint.removeprefix("/v1")
+        if endpoint.startswith("/"):
+            return str(httpx.URL(base).copy_with(path=endpoint))
         return f"{base}/{endpoint.lstrip('/')}"
 
     @asynccontextmanager
@@ -91,6 +92,9 @@ class BackendRuntimeRegistry:
                 unavailable[backend_id] = "disabled"
                 continue
             base_url = spec.resolved_base_url
+            if spec.options.get("legacy") and spec.kind == "llama.cpp":
+                base_url = settings.llama_base_url
+                spec.coordinator = settings.model_coordinator_mode
             if not base_url:
                 unavailable[backend_id] = "base URL is not configured"
                 continue
@@ -142,15 +146,11 @@ class BackendRuntimeRegistry:
             detail: Any = None
             try:
                 if runtime.spec.kind == "llama.cpp":
-                    response = await runtime.client.get(
-                        f"{runtime.base_url.rstrip('/')}/health"
-                    )
+                    response = await runtime.client.get(f"{runtime.base_url.rstrip('/')}/health")
                     healthy = response.is_success
                     detail = response.status_code
                 else:
-                    response = await runtime.client.get(
-                        f"{runtime.base_url.rstrip('/')}/models"
-                    )
+                    response = await runtime.client.get(f"{runtime.base_url.rstrip('/')}/models")
                     healthy = response.is_success
                     detail = response.status_code
             except httpx.HTTPError as exc:

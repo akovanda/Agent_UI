@@ -7,8 +7,9 @@ metadata:
     {{- include "local-ai-hub.labels" . | nindent 4 }}
     app.kubernetes.io/component: sillytavern
 spec:
-  accessModes: ["ReadWriteOnce"]
-  {{- include "local-ai-hub.storageClass" . | nindent 2 }}
+  accessModes:
+    {{- toYaml .Values.sillyTavern.storage.accessModes | nindent 4 }}
+  {{- include "local-ai-hub.storageClass" .Values.sillyTavern.storage | nindent 2 }}
   resources:
     requests:
       storage: {{ .Values.sillyTavern.storage.size }}

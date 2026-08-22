@@ -99,7 +99,9 @@ def prepare_chat_payload(
 
     if instruction_sections:
         configured_role = resolved.model.metadata.get("instruction_role", "system")
-        instruction_role = configured_role if configured_role in {"system", "developer"} else "system"
+        instruction_role = (
+            configured_role if configured_role in {"system", "developer"} else "system"
+        )
         conversation_messages.insert(
             0,
             {

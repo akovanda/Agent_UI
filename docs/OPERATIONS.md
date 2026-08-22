@@ -8,7 +8,9 @@
 ./hub smoke
 ```
 
-`doctor` validates generated secrets, unique high ports, catalog shape, Docker, Compose, and optionally GPU visibility. `smoke` validates PostgreSQL, llama.cpp, gateway health, and OpenAI-compatible model discovery from inside the Compose network.
+`doctor` validates generated secrets, unique high ports, catalog shape, Docker, Compose, and
+optionally GPU visibility. `smoke` validates PostgreSQL, gateway health, OpenAI-compatible model
+discovery, and llama.cpp health when an enabled local llama model is registered.
 
 After both models are imported, validate switching and collect a repeatable baseline:
 

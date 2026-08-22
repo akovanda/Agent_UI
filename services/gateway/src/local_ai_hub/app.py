@@ -85,9 +85,7 @@ def _record_to_dict(record: Any) -> dict[str, Any]:
 
 
 def _experience_header(request: Request) -> str | None:
-    return request.headers.get("X-Agent-UI-Experience") or request.headers.get(
-        "X-Local-AI-Profile"
-    )
+    return request.headers.get("X-Agent-UI-Experience") or request.headers.get("X-Local-AI-Profile")
 
 
 def _user_header(request: Request, settings: Settings) -> str:
@@ -259,13 +257,12 @@ def create_app(
                     "message": "No enabled models are registered; apply a catalog overlay.",
                 },
             )
-        usable = any(
-            model.backend in runtime.backends.runtimes for model in configured_models
-        )
+        usable = any(model.backend in runtime.backends.runtimes for model in configured_models)
         ready = usable and (bool(checks["memory"]) or not settings.memory_required)
+        status = "ok" if checks["memory"] else "degraded"
         return JSONResponse(
             status_code=200 if ready else 503,
-            content={"status": "ok" if ready else "unavailable", "checks": checks},
+            content={"status": status if ready else "unavailable", "checks": checks},
         )
 
     @application.get("/metrics")
@@ -322,7 +319,9 @@ def create_app(
         return {
             "requested_model": resolved.requested_model,
             "experience": resolved.profile_id,
+            "profile": resolved.profile_id,
             "model": resolved.backend_model,
+            "backend_model": resolved.backend_model,
             "backend": resolved.backend_id,
             "capabilities": sorted(resolved.model.capabilities),
             "reason": resolved.route_reason,
@@ -345,12 +344,20 @@ def create_app(
             "backends": sorted(new_document.backends),
             "models": sorted(new_document.models),
             "experiences": sorted(new_document.profiles),
+            "profiles": sorted(new_document.profiles),
         }
 
     @application.get("/api/models/status")
     async def model_status(request: Request) -> dict[str, Any]:
         runtime: Runtime = request.app.state.runtime
-        return await runtime.backends.status()
+        coordinated = [
+            item for item in runtime.backends.runtimes.values() if item.coordinator is not None
+        ]
+        if len(coordinated) == 1:
+            status = await coordinated[0].coordinator.status_payload()
+            status["backend_id"] = coordinated[0].backend_id
+            return status
+        return {"backends": await runtime.backends.status()}
 
     @application.post("/api/memories")
     async def create_memory(memory: MemoryCreate, request: Request) -> JSONResponse:

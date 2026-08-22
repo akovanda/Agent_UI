@@ -1,19 +1,24 @@
 Local AI Hub {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
 
+{{- if .Values.llama.enabled }}
 Model PVC:
   {{ default (printf "%s-models" (include "local-ai-hub.fullname" .)) .Values.llama.storage.existingClaim }}
+{{- end }}
 
 Inspect workloads:
   kubectl -n {{ .Release.Namespace }} get pods,svc,pvc
 
-Import a model through the repository toolbox:
-  ./hub k8s model-import gpt-oss-20b /path/to/gpt-oss-20b.gguf
-  ./hub k8s model-import stheno-8b /path/to/Llama-3.1-8B-Stheno-v3.4.Q4_K_M.gguf
+Import a declared model through the repository toolbox:
+  ./hub k8s model-import MODEL_ID /path/to/model.gguf
 
 {{- if not .Values.ingress.enabled }}
+{{- if .Values.openWebUI.enabled }}
 Open WebUI port-forward:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "local-ai-hub.fullname" . }}-openwebui 8080:{{ .Values.openWebUI.service.port }}
+{{- end }}
 
+{{- if .Values.sillyTavern.enabled }}
 SillyTavern port-forward:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "local-ai-hub.fullname" . }}-sillytavern 8000:{{ .Values.sillyTavern.service.port }}
+{{- end }}
 {{- end }}

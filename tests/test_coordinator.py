@@ -80,9 +80,7 @@ async def test_noop_and_already_loaded_paths() -> None:
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        noop = LlamaModelCoordinator(
-            client, "http://llama", "none", 1, 0.001, asyncio.Lock()
-        )
+        noop = LlamaModelCoordinator(client, "http://llama", "none", 1, 0.001, asyncio.Lock())
         await noop.ensure_loaded("anything")
         assert called == 0
         explicit = LlamaModelCoordinator(

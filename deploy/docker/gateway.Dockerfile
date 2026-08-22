@@ -17,8 +17,8 @@ WORKDIR /app
 COPY . /app
 RUN python -m pip install --no-cache-dir . "uvicorn[standard]>=0.30,<1" \
     && chmod +x /app/deploy/docker/gateway-entrypoint.py \
-    && mkdir -p /var/lib/local-ai-hub \
-    && chown -R hub:hub /app /var/lib/local-ai-hub
+    && mkdir -p /var/lib/agent-ui \
+    && chown -R hub:hub /app /var/lib/agent-ui
 
 USER hub
 EXPOSE 8000

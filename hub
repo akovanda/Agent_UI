@@ -37,9 +37,16 @@ toolbox_image() {
   env_value TOOLBOX_IMAGE "$DEFAULT_TOOLBOX_IMAGE"
 }
 
+prepare_shipped_bind_mounts() {
+  chmod -R a+rX \
+    "$ROOT/config/postgres-init" \
+    "$ROOT/config/prometheus"
+}
+
 compose() {
   require_docker
   [[ -f "$ENV_FILE" ]] || fail "Run ./hub init first"
+  prepare_shipped_bind_mounts
   local args=(
     --project-directory "$ROOT"
     --env-file "$ENV_FILE"

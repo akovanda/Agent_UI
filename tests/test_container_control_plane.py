@@ -8,7 +8,6 @@ from pathlib import Path
 
 import yaml
 
-
 spec = importlib.util.spec_from_file_location("hubctl_container", Path("ops/hubctl.py"))
 assert spec and spec.loader
 hubctl = importlib.util.module_from_spec(spec)
@@ -21,9 +20,7 @@ def test_base_catalog_is_model_neutral() -> None:
     assert catalog["models"] == {}
     assert catalog["backends"]["local-llama"]["kind"] == "llama.cpp"
     assert catalog["backends"]["local-llama"]["base_url_env"] == "LLAMA_BASE_URL"
-    assert {"chat", "code", "story", "image", "agent"}.issubset(
-        catalog["experiences"]
-    )
+    assert {"chat", "code", "story", "image", "agent"}.issubset(catalog["experiences"])
 
 
 def test_compose_has_optional_story_agent_and_observability_profiles() -> None:
@@ -51,6 +48,66 @@ def test_hub_is_executable_and_exposes_ai_first_commands() -> None:
     ):
         assert command in text
     assert "compose.generated.yaml" in text
+
+
+def test_smoke_check_is_catalog_aware_for_external_only_installations() -> None:
+    smoke = Path("ops/smoke.sh").read_text(encoding="utf-8")
+
+    assert "/runtime/catalog.resolved.json" in smoke
+    assert '.kind == "llama.cpp"' in smoke
+    assert "skipping its health check" in smoke
+
+
+def test_toolbox_runtime_tree_is_readable_by_arbitrary_users() -> None:
+    dockerfile = Path("deploy/docker/toolbox.Dockerfile").read_text(encoding="utf-8")
+    assert "chmod -R a+rX /opt/agent-ui" in dockerfile
+    assert "chmod 0755 /opt/agent-ui/ops/hubctl.py /opt/agent-ui/ops/*.sh" in dockerfile
+
+
+def test_hub_makes_shipped_read_only_bind_mounts_container_readable() -> None:
+    hub_script = Path("hub").read_text(encoding="utf-8")
+
+    assert '"$ROOT/config/postgres-init"' in hub_script
+    assert '"$ROOT/config/prometheus"' in hub_script
+    assert "chmod -R a+rX" in hub_script
+
+
+def test_generated_local_state_is_excluded_from_git_and_images() -> None:
+    gitignore = Path(".gitignore").read_text(encoding="utf-8").splitlines()
+    dockerignore = Path(".dockerignore").read_text(encoding="utf-8").splitlines()
+
+    assert ".agent-ui/" in gitignore
+    assert ".agent-ui" in dockerignore
+    assert ".coverage" in dockerignore
+
+
+def test_helm_templates_use_values_that_exist_in_the_shipped_chart() -> None:
+    chart_dir = Path("deploy/helm/local-ai-hub")
+    values = yaml.safe_load((chart_dir / "values.yaml").read_text(encoding="utf-8"))
+    templates = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (chart_dir / "templates").iterdir()
+        if path.is_file()
+    )
+
+    assert ".Values.postgresql" not in templates
+    assert ".Values.global" not in templates
+    assert "signupEnabled" not in templates
+    assert "memoriesEnabled" not in templates
+    assert 'index .Values.models "gpt-oss-20b"' not in templates
+    assert ".Values.postgres.image.pullPolicy" in templates
+    assert ".Values.openWebUI.image.pullPolicy" in templates
+    assert ".Values.sillyTavern.image.pullPolicy" in templates
+    assert ".Values.hermes.image.pullPolicy" in templates
+    assert ".Values.openWebUI.enableSignup" in templates
+    assert ".Values.openWebUI.enableMemories" in templates
+    assert "kind: Secret" in templates
+
+    for component in ("postgres", "llama", "openWebUI", "sillyTavern", "hermes"):
+        assert values[component]["storage"]["accessModes"]
+        assert "storageClass" in values[component]["storage"]
+    for component in ("postgres", "llama", "gateway", "openWebUI", "sillyTavern", "hermes"):
+        assert values[component]["service"]["type"] == "ClusterIP"
 
 
 def test_environment_initialization_allocates_unique_high_ports(tmp_path: Path) -> None:
@@ -91,12 +148,27 @@ def test_environment_initialization_is_stable_without_rotation(tmp_path: Path) -
     assert first == second
 
 
+def test_runtime_compose_override_is_host_readable(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    compose_output = tmp_path / ".agent-ui" / "compose.generated.yaml"
+    args = Namespace(
+        catalog="config/models/catalog.yaml",
+        overlay=str(tmp_path / "missing-overlay.yaml"),
+        models_dir=str(tmp_path / "models"),
+        runtime_dir=str(runtime_dir),
+        compose_output=str(compose_output),
+        hermes_dir=None,
+    )
+
+    assert hubctl.cmd_runtime_render(args) == 0
+    assert stat.S_IMODE(compose_output.stat().st_mode) == 0o644
+    assert stat.S_IMODE((runtime_dir / "catalog.resolved.json").stat().st_mode) == 0o600
+
+
 def test_host_file_generates_read_only_bind_mount() -> None:
     catalog = {
         "version": 2,
-        "backends": {
-            "local": {"kind": "llama.cpp", "base_url": "http://llama:8080"}
-        },
+        "backends": {"local": {"kind": "llama.cpp", "base_url": "http://llama:8080"}},
         "models": {
             "project-model": {
                 "backend": "local",
@@ -124,9 +196,7 @@ def test_host_file_generates_read_only_bind_mount() -> None:
 def test_existing_docker_volume_remains_externally_owned() -> None:
     catalog = {
         "version": 2,
-        "backends": {
-            "local": {"kind": "llama.cpp", "base_url": "http://llama:8080"}
-        },
+        "backends": {"local": {"kind": "llama.cpp", "base_url": "http://llama:8080"}},
         "models": {
             "shared-model": {
                 "backend": "local",
@@ -166,15 +236,39 @@ def test_remote_model_requires_no_artifact() -> None:
         "experiences": {"chat": {"capability": "chat"}},
     }
     hubctl.validate_catalog(catalog)
-    assert hubctl.render_compose_override(catalog) == {"services": {"llama": {}}}
+    assert hubctl.render_compose_override(catalog) == {
+        "services": {
+            "llama": {"profiles": ["local-llama"]},
+            "gateway": {
+                "depends_on": {"llama": {"condition": "service_started", "required": False}}
+            },
+        }
+    }
+
+
+def test_local_llama_model_keeps_the_inference_service_enabled() -> None:
+    catalog = {
+        "version": 2,
+        "backends": {"local": {"kind": "llama.cpp", "base_url": "http://llama:8080"}},
+        "models": {
+            "local-model": {
+                "backend": "local",
+                "capabilities": ["chat"],
+                "artifact": {"kind": "managed"},
+            }
+        },
+        "experiences": {"chat": {"capability": "chat"}},
+    }
+
+    override = hubctl.render_compose_override(catalog)
+    assert "profiles" not in override["services"]["llama"]
+    assert "gateway" not in override["services"]
 
 
 def test_local_llama_model_without_artifact_is_rejected() -> None:
     catalog = {
         "version": 2,
-        "backends": {
-            "local": {"kind": "llama.cpp", "base_url": "http://llama:8080"}
-        },
+        "backends": {"local": {"kind": "llama.cpp", "base_url": "http://llama:8080"}},
         "models": {
             "invalid": {
                 "backend": "local",
@@ -195,9 +289,7 @@ def test_local_llama_model_without_artifact_is_rejected() -> None:
 def test_kubernetes_values_preserve_full_catalog_and_existing_pvc() -> None:
     catalog = {
         "version": 2,
-        "backends": {
-            "local": {"kind": "llama.cpp", "base_url_env": "LLAMA_BASE_URL"}
-        },
+        "backends": {"local": {"kind": "llama.cpp", "base_url_env": "LLAMA_BASE_URL"}},
         "models": {
             "cluster-model": {
                 "display_name": "Cluster Model",

@@ -80,7 +80,7 @@ class ProfileRegistry:
                 }
             )
         for model_id, model in self.document.models.items():
-            if not model.enabled:
+            if not model.enabled or model.metadata.get("advertise_direct", True) is False:
                 continue
             backend = self.document.backends.get(model.backend)
             models.append(
@@ -187,8 +187,7 @@ class ProfileRegistry:
             )
         if required_capability and not model.has_capability(required_capability):
             raise UnavailableExperienceError(
-                f"model {model_id!r} does not declare endpoint capability "
-                f"{required_capability!r}"
+                f"model {model_id!r} does not declare endpoint capability {required_capability!r}"
             )
         return ResolvedProfile(
             requested_model=requested_model,

@@ -21,6 +21,9 @@ spec:
         app.kubernetes.io/component: llama
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/llama-configmap.yaml") . | sha256sum }}
+        {{- with .Values.llama.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

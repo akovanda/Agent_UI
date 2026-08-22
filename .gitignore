@@ -8,6 +8,7 @@ config/models/catalog.local.yaml
 backups/
 runtime/
 state/
+.agent-ui/
 *.gguf
 *.safetensors
 

@@ -2,7 +2,6 @@ from pathlib import Path
 
 import yaml
 
-
 BANNED_MODEL_IDENTITIES = ("gpt-oss", "stheno")
 GENERIC_SURFACES = [
     Path("README.md"),
@@ -19,9 +18,7 @@ def test_base_catalog_contains_no_model_identity() -> None:
     catalog = yaml.safe_load(Path("config/models/catalog.yaml").read_text(encoding="utf-8"))
     assert catalog["version"] == 2
     assert catalog["models"] == {}
-    assert {"chat", "code", "story", "image", "agent"}.issubset(
-        catalog["experiences"]
-    )
+    assert {"chat", "code", "story", "image", "agent"}.issubset(catalog["experiences"])
 
 
 def test_current_generic_surfaces_do_not_name_preferred_models() -> None:

@@ -39,7 +39,8 @@ RUN python -m pip install --no-cache-dir \
 COPY ops /opt/agent-ui/ops
 COPY config /opt/agent-ui/config
 COPY deploy/helm /opt/agent-ui/deploy/helm
-RUN chmod +x /opt/agent-ui/ops/hubctl.py /opt/agent-ui/ops/*.sh 2>/dev/null || true
+RUN chmod -R a+rX /opt/agent-ui \
+    && chmod 0755 /opt/agent-ui/ops/hubctl.py /opt/agent-ui/ops/*.sh
 
 WORKDIR /workspace
 ENTRYPOINT ["python", "/opt/agent-ui/ops/hubctl.py"]
