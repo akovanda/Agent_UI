@@ -1,373 +1,234 @@
 from __future__ import annotations
 
-import importlib.util
-from argparse import Namespace
+import argparse
+import json
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "ops" / "hubctl.py"
-SPEC = importlib.util.spec_from_file_location("hubctl_ops", MODULE_PATH)
-assert SPEC is not None and SPEC.loader is not None
-hubctl = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(hubctl)
+from ops import registryctl
 
 
-def base_catalog() -> dict:
-    return {
-        "version": 1,
-        "models": {
-            "assistant-model": {
-                "display_name": "Assistant",
-                "role": "assistant",
-                "filename": "assistant.gguf",
-                "aliases": ["assistant-alias.gguf"],
-                "source": {},
-                "runtime": {
-                    "ctx-size": 8192,
-                    "n-gpu-layers": "auto",
-                    "cache-type-k": "q8_0",
-                    "cache-type-v": "q8_0",
-                },
-            }
-        },
-        "profiles": {
-            "assistant": {
-                "model": "assistant-model",
-                "temperature": 0.5,
-            }
-        },
-    }
-
-
-def write_yaml(path: Path, value: dict) -> None:
+def write_registry(path: Path, value: dict[str, Any]) -> None:
     path.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
 
 
-def test_compose_declares_all_runtime_services() -> None:
-    compose_path = Path(__file__).resolve().parents[1] / "compose.yaml"
-    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
-    services = set(compose["services"])
-    assert {
-        "postgres",
-        "config-init",
-        "llama",
-        "gateway",
-        "open-webui",
-        "sillytavern",
-        "hermes",
-        "prometheus",
-        "toolbox",
-    } <= services
-    assert compose["services"]["postgres"]["ports"] == [
-        "${BIND_ADDRESS}:${POSTGRES_HOST_PORT}:5432"
-    ]
-    assert compose["services"]["llama"]["deploy"]["resources"]["reservations"][
-        "devices"
-    ][0]["capabilities"] == ["gpu"]
+def common(base: Path, overlay: Path) -> dict[str, str]:
+    return {"registry": str(base), "overlay": str(overlay)}
 
 
-def test_compose_optional_services_use_profiles() -> None:
-    compose = yaml.safe_load(
-        (Path(__file__).resolve().parents[1] / "compose.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
-    hermes = compose["services"]["hermes"]
-    assert hermes["profiles"] == ["agent"]
-    assert hermes["depends_on"]["gateway"]["condition"] == "service_healthy"
-    assert "LLAMA_API_KEY" not in hermes["environment"]
-    assert compose["services"]["prometheus"]["profiles"] == ["observability"]
-    assert compose["services"]["open-webui"]["environment"]["ENABLE_MEMORIES"] == (
-        "${OPEN_WEBUI_ENABLE_MEMORIES:-false}"
+def test_empty_generic_registry_is_valid() -> None:
+    registry = registryctl.load_registry(Path("config/registry.yaml"), None)
+    assert registry["version"] == 2
+    assert registry["models"] == {}
+    assert {"chat", "code", "story", "image", "embedding"}.issubset(
+        registry["profiles"]
     )
 
 
-def test_environment_initialization_generates_unique_high_ports_and_secrets(
-    tmp_path: Path,
+def test_host_sources_render_read_only_compose_mounts(
+    tmp_path: Path, registry_data: dict[str, Any]
 ) -> None:
-    template = Path(__file__).resolve().parents[1] / ".env.example"
-    output = tmp_path / ".env"
-    args = Namespace(
-        template=str(template),
-        output=str(output),
-        reallocate_ports=False,
-        rotate_secrets=False,
-    )
-
-    assert hubctl.cmd_env_init(args) == 0
-    values = hubctl.parse_env(output)
-    ports = [int(values[key]) for key in hubctl.PORT_KEYS]
-    assert len(ports) == len(set(ports))
-    assert all(40000 <= port <= 60999 for port in ports)
-    assert all(len(values[key]) >= 32 for key in hubctl.SECRET_KEYS)
-    assert output.stat().st_mode & 0o777 == 0o600
+    data = deepcopy(registry_data)
+    data["sources"]["shared"] = {
+        "type": "host",
+        "mount_path": "/model-sources/shared",
+        "host_path": str(tmp_path),
+        "read_only": True,
+    }
+    output = yaml.safe_load(registryctl.render_compose_override(data))
+    for service in ("config-init", "llama", "toolbox"):
+        mount = output["services"][service]["volumes"][0]
+        assert mount["source"] == str(tmp_path)
+        assert mount["target"] == "/model-sources/shared"
+        assert mount["read_only"] is True
+        assert mount["bind"]["create_host_path"] is False
 
 
-def test_environment_init_preserves_existing_values(tmp_path: Path) -> None:
-    template = Path(__file__).resolve().parents[1] / ".env.example"
-    output = tmp_path / ".env"
-    output.write_text(
-        "POSTGRES_HOST_PORT=49991\nPOSTGRES_PASSWORD=existing-secret-value\n",
-        encoding="utf-8",
-    )
-    args = Namespace(
-        template=str(template),
-        output=str(output),
-        reallocate_ports=False,
-        rotate_secrets=False,
-    )
-
-    hubctl.cmd_env_init(args)
-    values = hubctl.parse_env(output)
-    assert values["POSTGRES_HOST_PORT"] == "49991"
-    assert values["POSTGRES_PASSWORD"] == "existing-secret-value"
-
-
-def test_recursive_overlay_can_change_runtime_without_repeating_model(
-    tmp_path: Path,
+def test_llama_preset_uses_registered_source_path(
+    tmp_path: Path, registry_data: dict[str, Any]
 ) -> None:
-    catalog_path = tmp_path / "catalog.yaml"
-    overlay_path = tmp_path / "overlay.yaml"
-    write_yaml(catalog_path, base_catalog())
-    write_yaml(
-        overlay_path,
+    data = deepcopy(registry_data)
+    data["providers"]["mock"]["type"] = "llama_cpp"
+    data["sources"]["shared"] = {
+        "type": "host",
+        "mount_path": "/model-sources/shared",
+        "host_path": str(tmp_path),
+        "read_only": True,
+    }
+    data["models"]["general-model"]["artifact"] = {
+        "source": "shared",
+        "path": "project/general.gguf",
+    }
+    data["models"]["general-model"]["runtime"] = {
+        "ctx-size": 32768,
+        "n-gpu-layers": "all",
+    }
+    preset = registryctl.render_models_ini(data, 1024)
+    assert "[general-model]" in preset
+    assert "model = /model-sources/shared/project/general.gguf" in preset
+    assert "ctx-size = 32768" in preset
+
+
+def test_source_and_model_can_be_registered_from_existing_host_path(
+    tmp_path: Path, registry_data: dict[str, Any]
+) -> None:
+    base = tmp_path / "base.yaml"
+    overlay = tmp_path / "overlay.yaml"
+    write_registry(base, registry_data)
+    model_file = tmp_path / "project" / "model.gguf"
+    model_file.parent.mkdir()
+    model_file.write_bytes(b"GGUF-test")
+
+    args = argparse.Namespace(
+        **common(base, overlay),
+        model_id="my-local-model",
+        provider="mock",
+        capability=["chat,code", "reasoning"],
+        tag=["general"],
+        source=None,
+        path=None,
+        host_path=str(model_file),
+        upstream_model=None,
+        coordinator_model=None,
+        display_name=None,
+        description=None,
+        priority=20,
+        runtime=["ctx-size=16384"],
+        reasoning_transport="flat",
+        reasoning_field="reasoning_effort",
+        reasoning_level=["low,medium,high"],
+        developer_role=True,
+        tool_calling=True,
+        no_streaming=False,
+        disabled=False,
+        bind_profile="code",
+    )
+    assert registryctl.cmd_model_register(args) == 0
+    merged = registryctl.load_registry(base, overlay)
+    model = merged["models"]["my-local-model"]
+    source = merged["sources"][model["artifact"]["source"]]
+    assert source["host_path"] == str(model_file.parent)
+    assert model["artifact"]["path"] == "model.gguf"
+    assert model["capabilities"] == ["chat", "code", "reasoning"]
+    assert merged["profiles"]["code"]["model"] == "my-local-model"
+
+
+def test_registry_apply_is_declarative_and_validated(
+    tmp_path: Path, registry_data: dict[str, Any]
+) -> None:
+    base = tmp_path / "base.yaml"
+    overlay = tmp_path / "overlay.yaml"
+    manifest = tmp_path / "manifest.yaml"
+    write_registry(base, registry_data)
+    write_registry(
+        manifest,
         {
-            "version": 1,
+            "version": 2,
+            "providers": {
+                "remote": {
+                    "type": "openai_compatible",
+                    "base_url": "http://remote.test/v1",
+                    "api_key_env": "REMOTE_KEY",
+                }
+            },
             "models": {
-                "assistant-model": {
-                    "runtime": {"ctx-size": 16384},
+                "remote-chat": {
+                    "provider": "remote",
+                    "capabilities": ["chat", "reasoning"],
+                    "features": {
+                        "reasoning": {
+                            "transport": "object",
+                            "field": "reasoning",
+                            "levels": ["low", "high"],
+                        }
+                    },
                 }
             },
         },
     )
-
-    catalog = hubctl.load_catalog(catalog_path, overlay_path)
-    model = catalog["models"]["assistant-model"]
-    assert model["filename"] == "assistant.gguf"
-    assert model["runtime"]["ctx-size"] == 16384
-    assert model["runtime"]["cache-type-k"] == "q8_0"
-
-
-def test_catalog_rejects_profile_with_unknown_model(tmp_path: Path) -> None:
-    catalog = base_catalog()
-    catalog["profiles"]["assistant"]["model"] = "missing"
-    path = tmp_path / "catalog.yaml"
-    write_yaml(path, catalog)
-    with pytest.raises(hubctl.HubError, match="unknown model"):
-        hubctl.load_catalog(path, None)
+    args = argparse.Namespace(
+        **common(base, overlay),
+        input=str(manifest),
+        replace=False,
+        dry_run=False,
+    )
+    assert registryctl.cmd_registry_apply(args) == 0
+    merged = registryctl.load_registry(base, overlay)
+    assert merged["models"]["remote-chat"]["provider"] == "remote"
 
 
-def test_renderer_uses_existing_alias_and_creates_runtime_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_kubernetes_requires_explicit_mapping_for_host_sources(
+    tmp_path: Path, registry_data: dict[str, Any]
 ) -> None:
-    catalog_path = tmp_path / "catalog.yaml"
-    overlay_path = tmp_path / "overlay.yaml"
-    models_dir = tmp_path / "models"
-    runtime_dir = tmp_path / "runtime"
-    hermes_dir = tmp_path / "hermes"
-    models_dir.mkdir()
-    write_yaml(catalog_path, base_catalog())
-    (models_dir / "assistant-alias.gguf").write_bytes(b"gguf-test")
-    monkeypatch.setenv("LLAMA_API_KEY", "test-llama-key")
-    monkeypatch.setenv("GATEWAY_API_KEY", "test-gateway-key")
-    monkeypatch.setenv("LLAMA_FIT_TARGET_MIB", "768")
-
-    args = Namespace(
-        catalog=str(catalog_path),
-        overlay=str(overlay_path),
-        models_dir=str(models_dir),
-        runtime_dir=str(runtime_dir),
-        hermes_dir=str(hermes_dir),
-    )
-    assert hubctl.cmd_runtime_render(args) == 0
-
-    rendered = (runtime_dir / "models.ini").read_text(encoding="utf-8")
-    assert f"model = {models_dir / 'assistant-alias.gguf'}" in rendered
-    assert "fit-target = 768" in rendered
-    assert (runtime_dir / "profiles.json").is_file()
-    assert (runtime_dir / "catalog.resolved.json").is_file()
-    assert (runtime_dir / "llama_api_key").read_text().strip() == "test-llama-key"
-    hermes = yaml.safe_load((hermes_dir / "config.yaml").read_text(encoding="utf-8"))
-    assert hermes["model"] == {
-        "default": "hermes-agent",
-        "provider": "custom",
-        "base_url": "http://gateway:8000/v1",
-        "api_key": "test-gateway-key",
-        "context_length": 65536,
+    data = deepcopy(registry_data)
+    data["providers"]["mock"]["type"] = "llama_cpp"
+    data["sources"]["shared"] = {
+        "type": "host",
+        "mount_path": "/model-sources/shared",
+        "host_path": str(tmp_path),
+        "read_only": True,
     }
-
-
-def test_model_import_normalizes_to_catalog_filename(tmp_path: Path) -> None:
-    catalog_path = tmp_path / "catalog.yaml"
-    source = tmp_path / "downloaded-name.gguf"
-    models_dir = tmp_path / "models"
-    write_yaml(catalog_path, base_catalog())
-    source.write_bytes(b"model-data")
-
-    args = Namespace(
-        catalog=str(catalog_path),
-        overlay=None,
-        model_id="assistant-model",
-        source=str(source),
-        models_dir=str(models_dir),
-        force=False,
-    )
-    assert hubctl.cmd_model_import(args) == 0
-    assert (models_dir / "assistant.gguf").read_bytes() == b"model-data"
-    assert not any(path.name.endswith(".partial") for path in models_dir.iterdir())
-
-
-def test_model_import_refuses_overwrite_without_force(tmp_path: Path) -> None:
-    catalog_path = tmp_path / "catalog.yaml"
-    source = tmp_path / "source.gguf"
-    models_dir = tmp_path / "models"
-    models_dir.mkdir()
-    write_yaml(catalog_path, base_catalog())
-    source.write_bytes(b"new")
-    (models_dir / "assistant.gguf").write_bytes(b"old")
-
-    args = Namespace(
-        catalog=str(catalog_path),
-        overlay=None,
-        model_id="assistant-model",
-        source=str(source),
-        models_dir=str(models_dir),
-        force=False,
-    )
-    with pytest.raises(hubctl.HubError, match="already exists"):
-        hubctl.cmd_model_import(args)
-    assert (models_dir / "assistant.gguf").read_bytes() == b"old"
-
-
-def test_register_writes_private_overlay(tmp_path: Path) -> None:
-    overlay = tmp_path / "catalog.local.yaml"
-    args = Namespace(
-        model_id="private-model",
-        overlay=str(overlay),
-        filename="Private-Q4_K_M.gguf",
-        display_name="Private",
-        description="Private test model",
-        role="general",
-        context=32768,
-        gpu_layers="auto",
-        cache_type="q8_0",
-        repository=None,
-        file=None,
-        url=None,
-        profile_id=None,
-        no_profile=False,
-    )
-    assert hubctl.cmd_model_register(args) == 0
-    registered = yaml.safe_load(overlay.read_text(encoding="utf-8"))
-    assert registered["models"]["private-model"]["filename"] == "Private-Q4_K_M.gguf"
-    assert registered["models"]["private-model"]["runtime"]["ctx-size"] == 32768
-    assert registered["profiles"]["private-model"]["model"] == "private-model"
-    assert registered["profiles"]["private-model"]["advertised"] is True
-    assert overlay.stat().st_mode & 0o777 == 0o600
-
-
-def test_k8s_values_are_derived_from_catalog(tmp_path: Path) -> None:
-    catalog_path = tmp_path / "catalog.yaml"
-    output = tmp_path / "models-values.yaml"
-    write_yaml(catalog_path, base_catalog())
-    args = Namespace(
-        catalog=str(catalog_path),
-        overlay=None,
+    data["models"]["general-model"]["artifact"] = {
+        "source": "shared",
+        "path": "model.gguf",
+    }
+    base = tmp_path / "base.yaml"
+    output = tmp_path / "values.yaml"
+    write_registry(base, data)
+    args = argparse.Namespace(
+        registry=str(base),
+        overlay=str(tmp_path / "missing.yaml"),
         output=str(output),
     )
-    assert hubctl.cmd_catalog_k8s_values(args) == 0
+    with pytest.raises(registryctl.HubError, match="kubernetes mapping"):
+        registryctl.cmd_registry_k8s_values(args)
+
+
+def test_kubernetes_values_support_existing_claim(
+    tmp_path: Path, registry_data: dict[str, Any]
+) -> None:
+    data = deepcopy(registry_data)
+    data["providers"]["mock"]["type"] = "llama_cpp"
+    data["sources"]["shared"] = {
+        "type": "host",
+        "mount_path": "/model-sources/shared",
+        "host_path": str(tmp_path),
+        "read_only": True,
+        "kubernetes": {"type": "existingClaim", "claimName": "shared-models"},
+    }
+    data["models"]["general-model"]["artifact"] = {
+        "source": "shared",
+        "path": "model.gguf",
+    }
+    base = tmp_path / "base.yaml"
+    output = tmp_path / "values.yaml"
+    write_registry(base, data)
+    args = argparse.Namespace(
+        registry=str(base),
+        overlay=str(tmp_path / "missing.yaml"),
+        output=str(output),
+    )
+    assert registryctl.cmd_registry_k8s_values(args) == 0
     values = yaml.safe_load(output.read_text(encoding="utf-8"))
-    model = values["models"]["assistant-model"]
-    assert model["filename"] == "assistant.gguf"
-    assert model["contextSize"] == 8192
-    assert model["cacheTypeK"] == "q8_0"
+    assert values["modelSources"]["shared"]["claimName"] == "shared-models"
+    assert values["models"]["general-model"]["containerPath"].endswith("model.gguf")
 
 
-def test_doctor_rejects_duplicate_ports(tmp_path: Path) -> None:
-    catalog_path = tmp_path / "catalog.yaml"
-    env_path = tmp_path / ".env"
-    write_yaml(catalog_path, base_catalog())
-    values = {key: "50001" for key in hubctl.PORT_KEYS}
-    values.update({key: "x" * 32 for key in hubctl.SECRET_KEYS})
-    env_path.write_text(
-        "".join(f"{key}={value}\n" for key, value in values.items()),
-        encoding="utf-8",
-    )
-    args = Namespace(
-        env_file=str(env_path),
-        catalog=str(catalog_path),
-        overlay=None,
-    )
-    assert hubctl.cmd_doctor(args) == 1
-
-
-def test_model_filename_command_returns_canonical_name(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_plan_is_machine_readable(
+    tmp_path: Path, registry_data: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    catalog_path = tmp_path / "catalog.yaml"
-    write_yaml(catalog_path, base_catalog())
-    args = Namespace(
-        catalog=str(catalog_path),
-        overlay=None,
-        model_id="assistant-model",
+    base = tmp_path / "base.yaml"
+    write_registry(base, registry_data)
+    args = argparse.Namespace(
+        registry=str(base),
+        overlay=str(tmp_path / "missing.yaml"),
+        json=True,
     )
-    assert hubctl.cmd_model_filename(args) == 0
-    assert capsys.readouterr().out.strip() == "assistant.gguf"
-
-
-def test_helm_chart_contains_gpu_and_clusterip_defaults() -> None:
-    chart = Path(__file__).resolve().parents[1] / "deploy" / "helm" / "local-ai-hub"
-    values = yaml.safe_load((chart / "values.yaml").read_text(encoding="utf-8"))
-    assert values["llama"]["gpu"]["resourceName"] == "nvidia.com/gpu"
-    assert values["llama"]["modelsMax"] == 1
-    assert values["llama"]["service"]["type"] == "ClusterIP"
-    assert values["hermes"]["enabled"] is False
-    assert values["openWebUI"]["memoriesEnabled"] is False
-
-
-def test_generated_files_are_not_tracked_by_default() -> None:
-    ignore = (Path(__file__).resolve().parents[1] / ".gitignore").read_text(
-        encoding="utf-8"
-    )
-    assert "config/models/catalog.local.yaml" in ignore
-    assert "*.gguf" in ignore
-    assert "backups/" in ignore
-
-
-def test_checked_in_catalog_preserves_profile_quality_and_direct_aliases(
-    tmp_path: Path,
-) -> None:
-    root = Path(__file__).resolve().parents[1]
-    catalog = hubctl.load_catalog(root / "config/models/catalog.yaml", None)
-    models_dir = tmp_path / "models"
-    runtime_dir = tmp_path / "runtime"
-    models_dir.mkdir()
-
-    args = Namespace(
-        catalog=str(root / "config/models/catalog.yaml"),
-        overlay=None,
-        models_dir=str(models_dir),
-        runtime_dir=str(runtime_dir),
-        hermes_dir=None,
-    )
-    assert hubctl.cmd_runtime_render(args) == 0
-
-    from local_ai_hub.config import load_profiles
-
-    profiles = load_profiles(runtime_dir / "profiles.json")
-    assert profiles.profiles["assistant"].memory.enabled is True
-    assert profiles.profiles["assistant"].memory.namespaces == [
-        "user",
-        "infrastructure",
-        "projects",
-        "general",
-    ]
-    assert "precise, candid" in (profiles.profiles["assistant"].system_prompt or "")
-    assert profiles.profiles["storyteller"].defaults["repeat_penalty"] == 1.08
-    assert profiles.profiles["storyteller"].memory.namespaces == ["story", "campaign"]
-    assert profiles.profiles["gpt-oss-20b"].advertised is False
-    assert profiles.profiles["stheno-8b"].advertised is False
-    assert profiles.profiles["hermes-agent"].memory.enabled is False
-    assert catalog["profiles"]["auto"]["route"] == "auto"
+    assert registryctl.cmd_registry_plan(args) == 0
+    value = json.loads(capsys.readouterr().out)
+    assert value["profiles"]["image"]["available"] is True
+    assert value["providers"]["mock"]["type"] == "openai_compatible"
