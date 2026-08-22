@@ -37,6 +37,7 @@ services:
     environment:
       LLAMA_FIT_TARGET_MIB: ${LLAMA_FIT_TARGET_MIB}
       LLAMA_API_KEY: ${LLAMA_API_KEY}
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY}
       HERMES_API_KEY: ${HERMES_API_KEY}
     command:
       - runtime
@@ -108,7 +109,7 @@ services:
       llama:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/local_ai_hub
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/local_ai_hub
       POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/local_ai_hub
       LLAMA_BASE_URL: http://llama:8080
       LLAMA_CPP_BASE_URL: http://llama:8080
@@ -116,8 +117,8 @@ services:
       LLAMA_API_KEY: ${LLAMA_API_KEY}
       GATEWAY_API_KEY: ${GATEWAY_API_KEY}
       LOCAL_AI_HUB_API_KEY: ${GATEWAY_API_KEY}
-      PROFILE_CONFIG_PATH: /app/config/profiles
-      LOCAL_AI_HUB_PROFILE_CONFIG_PATH: /app/config/profiles
+      PROFILE_CONFIG_PATH: /runtime/profiles.json
+      LOCAL_AI_HUB_PROFILE_CONFIG_PATH: /runtime/profiles.json
       PROFILE_CATALOG_PATH: /runtime/profiles.json
       MODEL_CATALOG_PATH: /runtime/catalog.resolved.json
       LOCAL_AI_HUB_PROFILE_CATALOG_PATH: /runtime/profiles.json
@@ -208,6 +209,8 @@ services:
         condition: service_completed_successfully
       llama:
         condition: service_healthy
+      gateway:
+        condition: service_healthy
     command: ["gateway", "run"]
     environment:
       API_SERVER_ENABLED: "true"
@@ -219,7 +222,6 @@ services:
       HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_USERNAME}
       HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_PASSWORD}
       HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${WEBUI_SECRET_KEY}
-      LLAMA_API_KEY: ${LLAMA_API_KEY}
       HERMES_UID: "10000"
       HERMES_GID: "10000"
     ports:

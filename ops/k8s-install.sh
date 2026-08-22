@@ -24,7 +24,7 @@ kubectl -n "$namespace" create secret generic "$secret_name" \
   --from-literal=hermes-api-key="$HERMES_API_KEY" \
   --from-literal=hermes-dashboard-username="$HERMES_DASHBOARD_USERNAME" \
   --from-literal=hermes-dashboard-password="$HERMES_DASHBOARD_PASSWORD" \
-  --from-literal=gateway-database-url="postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${release}-postgres:5432/local_ai_hub" \
+  --from-literal=gateway-database-url="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${release}-postgres:5432/local_ai_hub" \
   --from-literal=openwebui-database-url="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${release}-postgres:5432/open_webui" \
   --dry-run=client -o yaml | kubectl apply -f -
 

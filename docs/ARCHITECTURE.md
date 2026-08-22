@@ -60,7 +60,7 @@ Namespaces prevent accidental cross-domain retrieval:
 
 | Profile | Default namespaces |
 |---|---|
-| `andrew-assistant` | `user`, `infrastructure`, `projects`, `general` |
+| `assistant` | `user`, `infrastructure`, `projects`, `general` |
 | `storyteller` | `story`, `campaign` |
 | direct model aliases | none |
 
@@ -87,8 +87,9 @@ transcript. SillyTavern remains the source of truth for active character and lor
 
 ### 6. Hermes Agent
 
-Hermes is an optional service profile. Its provider points to `gpt-oss-20b-hermes` through the
-gateway, while Hermes exposes a separate OpenAI-compatible API back to Open WebUI.
+Hermes is an optional service profile. Its provider points to the hidden `hermes-agent`
+profile through the gateway, while Hermes exposes a separate OpenAI-compatible API back to
+Open WebUI.
 
 This arrangement preserves:
 
@@ -103,7 +104,7 @@ This arrangement preserves:
 
 ```text
 Open WebUI
-  POST model=andrew-assistant
+  POST model=assistant
         │
         ▼
 Gateway authenticates → retrieves scoped memory → injects GPT-OSS profile
@@ -115,7 +116,7 @@ Acquire GPU lease → ensure gpt-oss-20b loaded → stream llama.cpp response
 ### Story request with automatic routing
 
 ```text
-Client sends model=local-auto and "Continue our campaign scene"
+Client sends model=auto and "Continue our campaign scene"
         │
         ▼
 Rule router selects storyteller
@@ -136,7 +137,7 @@ Open WebUI selects Hermes connection
 Hermes performs reasoning/tool loop
         │ model calls
         ▼
-Gateway model=gpt-oss-20b-hermes → llama.cpp
+Gateway model=hermes-agent → llama.cpp
 ```
 
 ## Concurrency model

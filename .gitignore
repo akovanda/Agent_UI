@@ -23,3 +23,9 @@ htmlcov/
 .DS_Store
 *.swp
 *.swo
+
+# Python packaging artifacts
+build/
+dist/
+*.egg-info/
+.venv/

@@ -115,6 +115,10 @@ def load_catalog(catalog: Path, overlay: Path | None) -> dict[str, Any]:
             raise HubError(f"Invalid profile id: {profile_id}")
         if not isinstance(profile, dict):
             raise HubError(f"Profile {profile_id} must be a mapping")
+        if profile.get("route") == "auto":
+            if profile.get("model") is not None:
+                raise HubError(f"Automatic profile {profile_id} cannot select a model")
+            continue
         if profile.get("model") not in models:
             raise HubError(
                 f"Profile {profile_id} references unknown model {profile.get('model')}"
@@ -268,17 +272,20 @@ def render_models_ini(catalog: dict[str, Any], models_dir: Path, fit_target: int
 
 def render_hermes(catalog: dict[str, Any], directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
-    assistant_model = catalog["profiles"].get("assistant", {}).get("model", "gpt-oss-20b")
+    hermes_profile = "hermes-agent"
+    assistant_model = catalog["profiles"].get(hermes_profile, {}).get(
+        "model", "gpt-oss-20b"
+    )
     context_length = int(
         catalog["models"].get(assistant_model, {}).get("runtime", {}).get("ctx-size", 65536)
     )
-    llama_key = os.getenv("LLAMA_API_KEY", "local-only")
+    gateway_key = os.getenv("GATEWAY_API_KEY", "local-only")
     config = {
         "model": {
-            "default": assistant_model,
+            "default": hermes_profile,
             "provider": "custom",
-            "base_url": "http://llama:8080/v1",
-            "api_key": llama_key,
+            "base_url": "http://gateway:8000/v1",
+            "api_key": gateway_key,
             "context_length": context_length,
         },
         "tool_loop_guardrails": {

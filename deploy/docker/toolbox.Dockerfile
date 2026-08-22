@@ -28,13 +28,16 @@ RUN apt-get update \
     && chmod 0755 /usr/local/bin/helm \
     && rm -rf /tmp/helm.tar.gz "/tmp/linux-${KARCH}"
 
+# Install the gateway and its complete test/lint dependency set in the toolbox.
+# The source is copied before operational scripts so Docker invalidates only the
+# layers affected by a given kind of change.
+COPY pyproject.toml README.md /tmp/local-ai-hub/
+COPY services/gateway/src /tmp/local-ai-hub/services/gateway/src
 RUN python -m pip install --no-cache-dir \
-    "huggingface_hub>=0.34,<1" \
-    "PyYAML>=6,<7" \
-    "requests>=2.32,<3" \
-    "pytest>=8,<9" \
-    "pytest-cov>=5,<7" \
-    "ruff>=0.9,<1"
+      "/tmp/local-ai-hub[dev]" \
+      "huggingface_hub>=0.34,<1" \
+      "requests>=2.32,<3" \
+    && rm -rf /tmp/local-ai-hub
 
 COPY ops /opt/local-ai-hub/ops
 COPY config /opt/local-ai-hub/config

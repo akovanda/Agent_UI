@@ -606,7 +606,7 @@ main() {
       docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
         -v "$ROOT:/workspace" -w /workspace \
         --entrypoint bash "$(toolbox_image)" \
-        -lc 'python -m pytest -q && python -m compileall -q src ops'
+        -lc 'python -m pytest -q && python -m compileall -q services/gateway/src ops'
       ;;
     lint)
       build_toolbox

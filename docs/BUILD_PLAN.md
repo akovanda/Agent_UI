@@ -95,7 +95,7 @@ Exit criteria:
 Tasks:
 
 1. Launch Open WebUI, create the first admin, disable open signup, and select
-   `andrew-assistant` by default.
+   `assistant` by default.
 2. Verify Markdown, code blocks, file uploads, conversation history, mobile browser behavior,
    and long-response streaming.
 3. Launch SillyTavern and configure an OpenAI-compatible endpoint to the gateway.
@@ -180,7 +180,7 @@ Exit criteria:
 
 Already implemented:
 
-- `local-auto` virtual model;
+- `auto` virtual model;
 - explicit model selection;
 - `/story`, `/assistant`, and profile-header overrides;
 - route-reason response header and Prometheus labels.
