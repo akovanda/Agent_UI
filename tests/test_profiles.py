@@ -1,74 +1,88 @@
-from pathlib import Path
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
 
 import pytest
 
-from local_ai_hub.config import load_profiles
-from local_ai_hub.profiles import ProfileRegistry, UnknownModelError
+from local_ai_hub.config import RegistryDocument
+from local_ai_hub.profiles import (
+    ProfileRegistry,
+    UnavailableProfileError,
+    UnknownModelError,
+)
 
 
-def registry() -> ProfileRegistry:
-    return ProfileRegistry(load_profiles(Path("config/gateway/profiles.yaml")))
+def registry(data: dict[str, Any]) -> ProfileRegistry:
+    return ProfileRegistry(RegistryDocument.model_validate(data))
 
 
-def test_advertised_models_are_virtual_interfaces() -> None:
-    ids = {item["id"] for item in registry().advertised_models()}
-    assert {"auto", "assistant", "storyteller"}.issubset(ids)
-
-
-def test_auto_profile_resolves_to_story_backend() -> None:
-    resolved = registry().resolve(
-        "auto", [{"role": "user", "content": "Continue our campaign scene."}]
+def test_profile_can_select_highest_priority_compatible_model(
+    registry_data: dict[str, Any],
+) -> None:
+    resolved = registry(registry_data).resolve(
+        "chat", [{"role": "user", "content": "Hello"}], endpoint="chat"
     )
-    assert resolved.profile_id == "storyteller"
-    assert resolved.backend_model == "stheno-8b"
+    assert resolved.profile_id == "chat"
+    assert resolved.model_id == "story-model"
+    assert resolved.provider_id == "mock"
 
 
-def test_unknown_model_fails_closed() -> None:
+def test_preferred_capability_breaks_equal_priority_tie(
+    registry_data: dict[str, Any],
+) -> None:
+    data = deepcopy(registry_data)
+    data["models"]["general-model"]["priority"] = 0
+    data["models"]["story-model"]["priority"] = 0
+    code = registry(data).resolve(
+        "code", [{"role": "user", "content": "Implement this API"}], endpoint="chat"
+    )
+    story = registry(data).resolve(
+        "story", [{"role": "user", "content": "Continue the scene"}], endpoint="chat"
+    )
+    assert code.model_id == "general-model"
+    assert story.model_id == "story-model"
+
+
+def test_automatic_routing_uses_registry_rules(registry_data: dict[str, Any]) -> None:
+    resolved = registry(registry_data).resolve(
+        "auto",
+        [{"role": "user", "content": "/story Continue the scene"}],
+        endpoint="chat",
+    )
+    assert resolved.profile_id == "story"
+    assert "prefix" in resolved.route_reason
+
+
+def test_direct_model_access_respects_endpoint(registry_data: dict[str, Any]) -> None:
+    resolved = registry(registry_data).resolve(
+        "image-model", [], endpoint="image"
+    )
+    assert resolved.upstream_model == "diffusion-upstream"
+    with pytest.raises(UnavailableProfileError):
+        registry(registry_data).resolve("image-model", [], endpoint="chat")
+
+
+def test_unavailable_profile_reports_missing_capability(
+    registry_data: dict[str, Any],
+) -> None:
+    data = deepcopy(registry_data)
+    data["models"].pop("image-model")
+    with pytest.raises(UnavailableProfileError, match="capabilities"):
+        registry(data).resolve("image", [], endpoint="image")
+    advertised = {item["id"] for item in registry(data).advertised_models()}
+    assert "image" not in advertised
+    assert "chat" in advertised
+
+
+def test_unknown_model_is_distinct_from_unavailable(registry_data: dict[str, Any]) -> None:
     with pytest.raises(UnknownModelError):
-        registry().resolve("invented-model", [{"role": "user", "content": "hello"}])
+        registry(registry_data).resolve("does-not-exist", [], endpoint="chat")
 
 
-def test_explicit_model_coordination_rejects_multiple_gpu_requests() -> None:
-    from pydantic import ValidationError
-
-    from local_ai_hub.config import Settings
-
-    with pytest.raises(ValidationError, match="GPU_MAX_CONCURRENT_REQUESTS=1"):
-        Settings(model_coordinator_mode="explicit", gpu_max_concurrent_requests=2)
-
-
-def test_compact_generated_profile_catalog_is_supported(tmp_path: Path) -> None:
-    path = tmp_path / "profiles.json"
-    path.write_text(
-        """
-{
-  "auto": {
-    "route": "auto",
-    "description": "Choose automatically"
-  },
-  "assistant": {
-    "model": "gpt-oss-20b",
-    "temperature": 0.55,
-    "reasoning_effort": "medium",
-    "memory": {"enabled": true, "namespaces": ["general"]}
-  },
-  "storyteller": {
-    "model": "stheno-8b",
-    "temperature": 1.3,
-    "reasoning_effort": "none"
-  }
-}
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-
-    document = load_profiles(path)
-
-    assert set(document.backends) == {"gpt-oss-20b", "stheno-8b"}
-    assert document.profiles["auto"].route == "auto"
-    assert document.profiles["assistant"].backend_model == "gpt-oss-20b"
-    assert document.profiles["assistant"].reasoning_effort == "medium"
-    assert document.profiles["assistant"].defaults["temperature"] == 0.55
-    assert document.profiles["assistant"].memory.namespaces == ["general"]
-    assert document.profiles["storyteller"].reasoning_effort is None
+def test_capability_report_includes_unbound_profiles(registry_data: dict[str, Any]) -> None:
+    data = deepcopy(registry_data)
+    data["models"].pop("vision-model")
+    report = registry(data).capability_report()
+    assert report["profiles"]["vision"]["available"] is False
+    assert report["profiles"]["image"]["available"] is True
