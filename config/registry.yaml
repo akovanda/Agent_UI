@@ -1,0 +1,194 @@
+version: 2
+
+providers:
+  local-gguf:
+    type: llama_cpp
+    enabled: true
+    required: false
+    description: Local GGUF inference through llama.cpp router mode.
+    base_url: http://llama:8080/v1
+    control_url: http://llama:8080
+    api_key_env: LLAMA_API_KEY
+    resource_group: local-gpu
+    max_concurrency: 1
+    endpoints:
+      chat: chat/completions
+      completion: completions
+      embedding: embeddings
+      rerank: rerank
+
+sources:
+  managed:
+    type: managed
+    description: Docker-managed model storage. Importing is optional.
+    mount_path: /models
+    read_only: false
+
+models: {}
+
+profiles:
+  auto:
+    route: auto
+    endpoint: chat
+    advertised: true
+    description: Select an available chat workload from deterministic route rules.
+
+  chat:
+    endpoint: chat
+    advertised: true
+    description: General conversation, explanation, analysis, and document work.
+    requires:
+      all_of: [chat]
+    defaults:
+      temperature: 0.6
+      top_p: 0.9
+      max_tokens: 8192
+    memory:
+      enabled: true
+      namespaces: [user, general, projects]
+
+  chat-fast:
+    endpoint: chat
+    advertised: true
+    description: Lower-latency chat profile that requests light reasoning when supported.
+    reasoning_effort: low
+    requires:
+      all_of: [chat]
+      prefer_capabilities: [fast]
+    defaults:
+      temperature: 0.5
+      top_p: 0.9
+      max_tokens: 4096
+    memory:
+      enabled: true
+      namespaces: [user, general, projects]
+
+  chat-deep:
+    endpoint: chat
+    advertised: true
+    description: Deliberate chat profile that requests greater reasoning effort when supported.
+    reasoning_effort: high
+    requires:
+      all_of: [chat]
+      prefer_capabilities: [reasoning]
+    defaults:
+      temperature: 0.5
+      top_p: 0.9
+      max_tokens: 16384
+    memory:
+      enabled: true
+      namespaces: [user, general, projects]
+
+  code:
+    endpoint: chat
+    advertised: true
+    description: Software design, implementation, debugging, review, and repository work.
+    requires:
+      all_of: [chat]
+      prefer_capabilities: [code, tools, reasoning]
+    system_prompt: |
+      Act as a careful software engineer. Prefer executable changes, tests, explicit
+      assumptions, and evidence over speculation. Preserve repository conventions and
+      call out destructive or security-sensitive operations before performing them.
+    defaults:
+      temperature: 0.35
+      top_p: 0.9
+      max_tokens: 16384
+    reasoning_effort: high
+    memory:
+      enabled: true
+      namespaces: [user, projects, code]
+
+  story:
+    endpoint: chat
+    advertised: true
+    description: Fiction, roleplay, campaigns, character dialogue, and worldbuilding.
+    requires:
+      all_of: [chat]
+      prefer_capabilities: [story, long_context]
+    system_prompt: |
+      Collaborate on fiction and roleplay while preserving continuity, character voice,
+      stakes, and player agency. Distinguish established facts from new inventions and
+      favor vivid, controlled prose over exposition.
+    defaults:
+      temperature: 1.1
+      top_p: 0.95
+      max_tokens: 8192
+    memory:
+      enabled: true
+      namespaces: [story, campaign]
+
+  vision:
+    endpoint: chat
+    advertised: true
+    description: Chat over images and other visual inputs.
+    requires:
+      all_of: [chat, vision]
+    defaults:
+      temperature: 0.4
+      top_p: 0.9
+      max_tokens: 8192
+    memory:
+      enabled: true
+      namespaces: [user, general, projects]
+
+  image:
+    endpoint: image
+    advertised: true
+    description: OpenAI-compatible image generation through any registered image provider.
+    requires:
+      all_of: [image]
+    defaults: {}
+
+  embedding:
+    endpoint: embedding
+    advertised: true
+    description: Vector embeddings through any registered embedding model.
+    requires:
+      all_of: [embedding]
+    defaults: {}
+
+  rerank:
+    endpoint: rerank
+    advertised: true
+    description: Document reranking through any registered reranker.
+    requires:
+      all_of: [rerank]
+    defaults: {}
+
+  agent:
+    endpoint: chat
+    advertised: false
+    description: Tool-capable profile for agent runtimes such as Hermes.
+    requires:
+      all_of: [chat, tools]
+      prefer_capabilities: [reasoning, code]
+    reasoning_effort: high
+    defaults:
+      temperature: 0.4
+      top_p: 0.9
+      max_tokens: 16384
+    memory:
+      enabled: false
+
+routes:
+  - profile: story
+    priority: 100
+    prefixes: [/story, /roleplay]
+    patterns:
+      - '\b(?:continue|write|draft) (?:the |our |my )?(?:story|scene|chapter|campaign)\b'
+      - '\b(?:roleplay|role-play|game master|worldbuilding|lorebook)\b'
+  - profile: code
+    priority: 90
+    prefixes: [/code, /debug]
+    patterns:
+      - '\b(?:debug|implement|refactor|compile|unit test|pull request|stack trace)\b'
+      - '\b(?:python|scala|typescript|rust|golang|kubernetes|docker|api|database)\b'
+  - profile: vision
+    priority: 80
+    prefixes: [/vision, /image-analyze]
+    patterns:
+      - '\b(?:look at|analyze|describe|inspect) (?:this |the )?(?:image|photo|screenshot|diagram)\b'
+  - profile: chat
+    priority: 0
+    prefixes: [/chat, /general]
