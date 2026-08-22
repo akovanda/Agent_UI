@@ -3,9 +3,9 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "local-ai-hub-gateway"
-version = "0.2.0"
-description = "OpenAI-compatible orchestration gateway for a multi-interface local AI stack"
+name = "agent-ui-gateway"
+version = "0.3.0"
+description = "Capability-aware OpenAI-compatible gateway and control plane for local AI"
 requires-python = ">=3.11"
 dependencies = [
   "asyncpg>=0.30,<1",
@@ -44,7 +44,7 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-src = ["services/gateway/src", "tests"]
+src = ["services/gateway/src", "tests", "ops"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
