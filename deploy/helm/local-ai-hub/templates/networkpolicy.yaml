@@ -1,0 +1,38 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-internal
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "local-ai-hub.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.openWebUI.service.port }}
+        - protocol: TCP
+          port: {{ .Values.sillyTavern.service.port }}
+        {{- if .Values.hermes.enabled }}
+        - protocol: TCP
+          port: {{ .Values.hermes.service.dashboardPort }}
+        {{- end }}
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

@@ -1,0 +1,76 @@
+version: 1
+models:
+  gpt-oss-20b:
+    display_name: GPT-OSS 20B
+    role: assistant
+    filename: gpt-oss-20b.gguf
+    aliases:
+      - gpt-oss-20b-mxfp4.gguf
+      - gpt-oss-20b-MXFP4.gguf
+    description: General reasoning, knowledge, coding, RAG, and tool-use model.
+    source: {}
+    runtime:
+      ctx-size: 65536
+      n-gpu-layers: auto
+      n-cpu-moe: 8
+      cache-type-k: q8_0
+      cache-type-v: q8_0
+      flash-attn: auto
+      fit: true
+      fit-target: 1024
+      parallel: 1
+      jinja: true
+      load-on-startup: false
+      stop-timeout: 180
+  stheno-8b:
+    display_name: Stheno 8B Storyteller
+    role: story
+    filename: Llama-3.1-8B-Stheno-v3.4.Q4_K_M.gguf
+    aliases:
+      - Llama-3.1-8B-Stheno-v3.4-Q4_K_M.gguf
+    description: Creative writing, roleplay, campaign narration, and character dialogue.
+    source:
+      kind: huggingface
+      repository: bartowski/Llama-3.1-8B-Stheno-v3.4-GGUF
+      file: Llama-3.1-8B-Stheno-v3.4-Q4_K_M.gguf
+    runtime:
+      ctx-size: 32768
+      n-gpu-layers: all
+      cache-type-k: q8_0
+      cache-type-v: q8_0
+      flash-attn: auto
+      fit: true
+      fit-target: 1024
+      parallel: 1
+      jinja: true
+      load-on-startup: false
+      stop-timeout: 120
+profiles:
+  assistant:
+    model: gpt-oss-20b
+    temperature: 0.55
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 8192
+    reasoning_effort: medium
+  assistant-fast:
+    model: gpt-oss-20b
+    temperature: 0.45
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 4096
+    reasoning_effort: low
+  assistant-deep:
+    model: gpt-oss-20b
+    temperature: 0.5
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 16384
+    reasoning_effort: high
+  storyteller:
+    model: stheno-8b
+    temperature: 1.3
+    top_p: 0.95
+    min_p: 0.15
+    max_tokens: 8192
+    reasoning_effort: none

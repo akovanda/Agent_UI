@@ -1,0 +1,21 @@
+{{- if .Values.hermes.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-hermes
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hermes
+spec:
+  type: {{ .Values.hermes.service.type }}
+  selector:
+    {{- include "local-ai-hub.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hermes
+  ports:
+    - name: api
+      port: {{ .Values.hermes.service.apiPort }}
+      targetPort: api
+    - name: dashboard
+      port: {{ .Values.hermes.service.dashboardPort }}
+      targetPort: dashboard
+{{- end }}

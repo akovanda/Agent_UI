@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-llama
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llama
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "local-ai-hub.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: llama
+  template:
+    metadata:
+      labels:
+        {{- include "local-ai-hub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: llama
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/llama-configmap.yaml") . | sha256sum }}
+        {{- toYaml .Values.global.podAnnotations | nindent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.llama.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llama.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llama.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: llama
+          image: "{{ .Values.llama.image.repository }}:{{ .Values.llama.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - >-
+              exec /app/llama-server
+              --models-preset /runtime/models.ini
+              --models-max {{ .Values.llama.modelsMax }}
+              --host 0.0.0.0
+              --port {{ .Values.llama.service.port }}
+              --metrics
+              --jinja
+              --api-key "$LLAMA_API_KEY"
+          env:
+            - name: LLAMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: llama-api-key
+          ports:
+            - name: http
+              containerPort: {{ .Values.llama.service.port }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: {{ .Values.llama.resources.requests.cpu | quote }}
+              memory: {{ .Values.llama.resources.requests.memory | quote }}
+              {{ .Values.llama.gpu.resourceName }}: {{ .Values.llama.gpu.count | quote }}
+            limits:
+              cpu: {{ .Values.llama.resources.limits.cpu | quote }}
+              memory: {{ .Values.llama.resources.limits.memory | quote }}
+              {{ .Values.llama.gpu.resourceName }}: {{ .Values.llama.gpu.count | quote }}
+          volumeMounts:
+            - name: models
+              mountPath: /models
+            - name: runtime
+              mountPath: /runtime
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-models" (include "local-ai-hub.fullname" .)) .Values.llama.storage.existingClaim }}
+        - name: runtime
+          configMap:
+            name: {{ include "local-ai-hub.fullname" . }}-llama
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.llama.shmSize }}

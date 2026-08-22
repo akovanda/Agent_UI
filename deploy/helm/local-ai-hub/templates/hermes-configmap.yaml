@@ -1,0 +1,28 @@
+{{- if .Values.hermes.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-hermes
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hermes
+data:
+  config.yaml: |
+    model:
+      default: gpt-oss-20b
+      provider: custom
+      base_url: http://{{ include "local-ai-hub.fullname" . }}-llama:{{ .Values.llama.service.port }}/v1
+      api_key: ${OPENAI_API_KEY}
+      context_length: {{ (index .Values.models "gpt-oss-20b").contextSize }}
+    database:
+      journal_mode: wal
+    tool_loop_guardrails:
+      hard_stop_enabled: true
+      hard_stop_after:
+        exact_failure: 5
+        idempotent_no_progress: 5
+  SOUL.md: |
+    You are a private local operations and knowledge assistant. Be precise, state uncertainty,
+    prefer reversible actions, never expose secrets, and require explicit approval for destructive,
+    security-sensitive, or externally visible operations.
+{{- end }}

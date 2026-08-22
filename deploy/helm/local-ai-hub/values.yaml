@@ -1,0 +1,197 @@
+global:
+  existingSecret: local-ai-hub-secrets
+  imagePullPolicy: IfNotPresent
+  storageClass: ""
+  podAnnotations: {}
+
+models:
+  gpt-oss-20b:
+    enabled: true
+    filename: gpt-oss-20b.gguf
+    contextSize: 65536
+    gpuLayers: auto
+    cpuMoeLayers: 8
+    cacheTypeK: q8_0
+    cacheTypeV: q8_0
+  stheno-8b:
+    enabled: true
+    filename: Llama-3.1-8B-Stheno-v3.4.Q4_K_M.gguf
+    contextSize: 32768
+    gpuLayers: all
+    cpuMoeLayers: 0
+    cacheTypeK: q8_0
+    cacheTypeV: q8_0
+
+hubProfiles:
+  assistant:
+    model: gpt-oss-20b
+    temperature: 0.55
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 8192
+    reasoning_effort: medium
+  assistant-fast:
+    model: gpt-oss-20b
+    temperature: 0.45
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 4096
+    reasoning_effort: low
+  assistant-deep:
+    model: gpt-oss-20b
+    temperature: 0.5
+    top_p: 0.9
+    min_p: 0.05
+    max_tokens: 16384
+    reasoning_effort: high
+  storyteller:
+    model: stheno-8b
+    temperature: 1.3
+    top_p: 0.95
+    min_p: 0.15
+    max_tokens: 8192
+    reasoning_effort: none
+
+postgresql:
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: pg16
+  storage:
+    size: 20Gi
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+
+gateway:
+  replicaCount: 1
+  app: ""
+  image:
+    repository: local-ai-hub-gateway
+    tag: "0.2.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+
+llama:
+  image:
+    repository: ghcr.io/ggml-org/llama.cpp
+    tag: server-cuda
+  service:
+    type: ClusterIP
+    port: 8080
+  modelsMax: 1
+  fitTargetMiB: 1024
+  storage:
+    size: 50Gi
+    existingClaim: ""
+    accessModes: [ReadWriteOnce]
+  gpu:
+    resourceName: nvidia.com/gpu
+    count: 1
+  shmSize: 2Gi
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+    limits:
+      cpu: "24"
+      memory: 96Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+openWebUI:
+  enabled: true
+  image:
+    repository: ghcr.io/open-webui/open-webui
+    tag: main
+  service:
+    type: ClusterIP
+    port: 8080
+  signupEnabled: true
+  storage:
+    size: 10Gi
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+sillyTavern:
+  enabled: true
+  image:
+    repository: ghcr.io/sillytavern/sillytavern
+    tag: latest
+  service:
+    type: ClusterIP
+    port: 8000
+  storage:
+    size: 10Gi
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+hermes:
+  enabled: false
+  image:
+    repository: nousresearch/hermes-agent
+    tag: latest
+  service:
+    type: ClusterIP
+    apiPort: 8642
+    dashboardPort: 9119
+  storage:
+    size: 10Gi
+    existingClaim: ""
+  dashboard:
+    enabled: true
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  openWebUI:
+    host: ai.example.internal
+    tlsSecret: ""
+  sillyTavern:
+    host: story.example.internal
+    tlsSecret: ""
+  hermes:
+    host: agent.example.internal
+    tlsSecret: ""
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  labels: {}
+
+networkPolicy:
+  enabled: false

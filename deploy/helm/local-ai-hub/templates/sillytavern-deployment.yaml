@@ -1,0 +1,76 @@
+{{- if .Values.sillyTavern.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-sillytavern
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sillytavern
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "local-ai-hub.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: sillytavern
+  template:
+    metadata:
+      labels:
+        {{- include "local-ai-hub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: sillytavern
+      annotations:
+        {{- toYaml .Values.global.podAnnotations | nindent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+        - name: prepare-data
+          image: busybox:1.37
+          command: ["sh", "-ec", "mkdir -p /persistent/config /persistent/data /persistent/plugins /persistent/extensions"]
+          volumeMounts:
+            - name: persistent
+              mountPath: /persistent
+      containers:
+        - name: sillytavern
+          image: "{{ .Values.sillyTavern.image.repository }}:{{ .Values.sillyTavern.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: FORCE_COLOR
+              value: "1"
+            - name: SILLYTAVERN_HEARTBEATINTERVAL
+              value: "30"
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            exec:
+              command: ["node", "src/healthcheck.js"]
+            periodSeconds: 15
+          livenessProbe:
+            exec:
+              command: ["node", "src/healthcheck.js"]
+            initialDelaySeconds: 45
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.sillyTavern.resources | nindent 12 }}
+          volumeMounts:
+            - name: persistent
+              mountPath: /home/node/app/config
+              subPath: config
+            - name: persistent
+              mountPath: /home/node/app/data
+              subPath: data
+            - name: persistent
+              mountPath: /home/node/app/plugins
+              subPath: plugins
+            - name: persistent
+              mountPath: /home/node/app/public/scripts/extensions/third-party
+              subPath: extensions
+      volumes:
+        - name: persistent
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-sillytavern" (include "local-ai-hub.fullname" .)) .Values.sillyTavern.storage.existingClaim }}
+{{- end }}

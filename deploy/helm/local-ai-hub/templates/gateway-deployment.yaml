@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-gateway
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "local-ai-hub.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "local-ai-hub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+      annotations:
+        {{- toYaml .Values.global.podAnnotations | nindent 8 }}
+    spec:
+      containers:
+        - name: gateway
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: gateway-database-url
+            - name: LLAMA_BASE_URL
+              value: http://{{ include "local-ai-hub.fullname" . }}-llama:{{ .Values.llama.service.port }}
+            - name: LLAMA_CPP_BASE_URL
+              value: http://{{ include "local-ai-hub.fullname" . }}-llama:{{ .Values.llama.service.port }}
+            - name: LLAMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: llama-api-key
+            - name: GATEWAY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: gateway-api-key
+            - name: LOCAL_AI_HUB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: gateway-api-key
+            - name: PROFILE_CATALOG_PATH
+              value: /runtime/profiles.json
+            - name: MODEL_CATALOG_PATH
+              value: /runtime/catalog.resolved.json
+            - name: LOCAL_AI_HUB_PROFILE_CATALOG_PATH
+              value: /runtime/profiles.json
+            - name: LOCAL_AI_HUB_MODEL_CATALOG_PATH
+              value: /runtime/catalog.resolved.json
+            - name: GATEWAY_HOST
+              value: 0.0.0.0
+            - name: GATEWAY_PORT
+              value: {{ .Values.gateway.service.port | quote }}
+            {{- if .Values.gateway.app }}
+            - name: GATEWAY_APP
+              value: {{ .Values.gateway.app | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.service.port }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - name: runtime
+              mountPath: /runtime
+              readOnly: true
+      volumes:
+        - name: runtime
+          configMap:
+            name: {{ include "local-ai-hub.fullname" . }}-gateway-runtime

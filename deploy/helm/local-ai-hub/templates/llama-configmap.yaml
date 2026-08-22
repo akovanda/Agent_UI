@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-llama
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llama
+data:
+  models.ini: |
+    version = 1
+
+    [*]
+    jinja = true
+    fit = true
+    fit-target = {{ .Values.llama.fitTargetMiB }}
+    parallel = 1
+    load-on-startup = false
+    stop-timeout = 180
+    dedup-cache-models = true
+    {{- range $id, $model := .Values.models }}
+    {{- if $model.enabled }}
+
+    [{{ $id }}]
+    model = /models/{{ $model.filename }}
+    ctx-size = {{ $model.contextSize }}
+    n-gpu-layers = {{ $model.gpuLayers }}
+    {{- if gt (int $model.cpuMoeLayers) 0 }}
+    n-cpu-moe = {{ $model.cpuMoeLayers }}
+    {{- end }}
+    cache-type-k = {{ $model.cacheTypeK }}
+    cache-type-v = {{ $model.cacheTypeV }}
+    flash-attn = auto
+    fit = true
+    fit-target = {{ $.Values.llama.fitTargetMiB }}
+    parallel = 1
+    jinja = true
+    load-on-startup = false
+    stop-timeout = 180
+    {{- end }}
+    {{- end }}

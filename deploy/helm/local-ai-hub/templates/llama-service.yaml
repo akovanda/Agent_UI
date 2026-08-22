@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-llama
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llama
+spec:
+  type: {{ .Values.llama.service.type }}
+  selector:
+    {{- include "local-ai-hub.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: llama
+  ports:
+    - name: http
+      port: {{ .Values.llama.service.port }}
+      targetPort: http

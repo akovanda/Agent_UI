@@ -1,0 +1,25 @@
+
+# Local AI Hub generated deployment state
+.env
+.env.*
+!.env.example
+.local-ai-hub-k8s-models.yaml
+config/models/catalog.local.yaml
+backups/
+runtime/
+state/
+*.gguf
+*.safetensors
+
+# Python and local test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor and OS metadata
+.DS_Store
+*.swp
+*.swo

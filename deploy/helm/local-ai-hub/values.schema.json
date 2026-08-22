@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["global", "models", "postgresql", "gateway", "llama"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "required": ["existingSecret"],
+      "properties": {
+        "existingSecret": {"type": "string", "minLength": 1},
+        "imagePullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]},
+        "storageClass": {"type": "string"}
+      }
+    },
+    "models": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["enabled", "filename", "contextSize", "gpuLayers"],
+        "properties": {
+          "enabled": {"type": "boolean"},
+          "filename": {"type": "string", "pattern": "^[^/]+\\.gguf$"},
+          "contextSize": {"type": "integer", "minimum": 1024},
+          "gpuLayers": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "string"}]},
+          "cpuMoeLayers": {"type": "integer", "minimum": 0},
+          "cacheTypeK": {"type": "string"},
+          "cacheTypeV": {"type": "string"}
+        }
+      }
+    },
+    "llama": {
+      "type": "object",
+      "required": ["modelsMax", "gpu", "storage"],
+      "properties": {
+        "modelsMax": {"type": "integer", "minimum": 1},
+        "fitTargetMiB": {"type": "integer", "minimum": 256},
+        "gpu": {
+          "type": "object",
+          "required": ["resourceName", "count"],
+          "properties": {
+            "resourceName": {"type": "string", "minLength": 1},
+            "count": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    }
+  }
+}

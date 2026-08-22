@@ -1,0 +1,18 @@
+{{- if .Values.openWebUI.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "local-ai-hub.fullname" . }}-openwebui
+  labels:
+    {{- include "local-ai-hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openwebui
+spec:
+  type: {{ .Values.openWebUI.service.type }}
+  selector:
+    {{- include "local-ai-hub.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: openwebui
+  ports:
+    - name: http
+      port: {{ .Values.openWebUI.service.port }}
+      targetPort: http
+{{- end }}
