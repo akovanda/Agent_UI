@@ -1,243 +1,295 @@
-# Local AI Hub
+# Agent UI
 
-Local AI Hub is a private, multi-model AI stack designed for a single NVIDIA GPU and a large-memory Linux server. It presents GPT-OSS 20B as the general assistant and agent model, Stheno 8B as the story and roleplay model, and gives each workload the interface that fits it:
+Agent UI is a model-agnostic, self-hosted interface and control plane for local and remote AI. It combines a capability registry, OpenAI-compatible gateway, Docker Compose deployment, Kubernetes/Helm deployment, shared memory, specialized human interfaces, and an optional agent runtime.
 
-- **Open WebUI** for general chat, files, RAG, memory, coding, and assistant profiles.
-- **SillyTavern** for persistent campaigns, character cards, lorebooks, and creative generation.
-- **Hermes Agent** as an optional agent runtime for tools, skills, memory, scheduling, and integrations.
-- **llama.cpp router mode** as the common inference backend, with at most one model resident on the T4.
-- **PostgreSQL + pgvector** for gateway memory and Open WebUI persistence.
+**Version 0.3 does not prescribe or bundle any model.** Models become useful only after an operator or setup agent registers what is actually available on the machine.
 
-Compose is the canonical deployment. A Helm chart maintains the same topology for Kubernetes.
+## What it is for
 
-## Deployment contract
+Agent UI gives one installation explicit paths for several workloads:
 
-The host needs only:
+| Workload | Default human interface | Gateway path | Registry capability |
+|---|---|---|---|
+| General chat and analysis | Open WebUI | `/v1/chat/completions` | `chat` |
+| Coding and repository work | Open WebUI or an agent client | `/v1/chat/completions` using profile `code` | `chat`, preferably `code`/`tools`/`reasoning` |
+| Stories, roleplay, and worldbuilding | SillyTavern | `/v1/chat/completions` using profile `story` | `chat`, preferably `story`/`long_context` |
+| Vision | Open WebUI | `/v1/chat/completions` using profile `vision` | `chat` + `vision` |
+| Image generation | Open WebUI or any OpenAI client | `/v1/images/generations` | `image` |
+| Embeddings | RAG clients and services | `/v1/embeddings` | `embedding` |
+| Reranking | Retrieval clients | `/v1/rerank` | `rerank` |
+| Tool-using agents | Hermes or another agent client | `/v1/chat/completions` using profile `agent` | `chat` + `tools` |
 
-1. Docker Engine.
-2. Docker Compose v2.
-3. NVIDIA Container Toolkit for GPU use.
-4. A POSIX-compatible shell to invoke `./hub`.
+A profile describes a workload. A model advertises capabilities. The gateway binds the profile to the highest-priority compatible model at request time.
 
-Python, PostgreSQL, Hugging Face CLI, Helm, kubectl, OpenSSL, and model-management utilities run inside the toolbox container. No model weights, generated secrets, databases, conversations, or runtime state are stored in Git.
+## Design goals
+
+- **No model-name logic.** Routing, reasoning, tools, and prompt behavior come from registry metadata.
+- **Use models where they already live.** Docker can mount an existing host directory read-only; copying to a managed volume is optional.
+- **AI-first setup.** The registry is declarative YAML with a JSON Schema, machine-readable plan output, and read-only discovery APIs.
+- **Human-first runtime.** Once configured, people use Open WebUI, SillyTavern, Hermes, or another OpenAI-compatible client.
+- **Capability negotiation.** Reasoning effort is forwarded only through a transport the selected model declares.
+- **One contract across platforms.** Compose and Helm consume the same providers, sources, models, profiles, and routes.
+- **Private by default.** Compose binds to loopback and does not publish model weights or runtime secrets.
+
+## Architecture
 
 ```text
-Browser / phone
-      │
-      ├── Open WebUI ───────────┐
-      ├── SillyTavern ──────────┼── Local AI Hub Gateway
-      └── Hermes Agent (opt.) ──┘          │
-                                           ├── scoped memory / profiles
-                                           ├── request serialization
-                                           └── model routing
-                                                    │
-                                              llama.cpp router
-                                                    │
-                                      one model resident on the T4
-                                           ┌────────┴────────┐
-                                           │                 │
-                                     GPT-OSS 20B        Stheno 8B
+ Open WebUI ───────┐
+ SillyTavern ──────┼────► Agent UI Gateway ─────► registered providers
+ Hermes / clients ─┘          │                         │
+                              │                         ├─ llama.cpp / GGUF
+                              │                         ├─ OpenAI-compatible text
+                              │                         ├─ image generation
+                              │                         ├─ embeddings / reranking
+                              │                         └─ future adapters
+                              │
+                              └──── PostgreSQL + pgvector memory
 ```
 
-## Compose quick start
+The gateway exposes only profiles that currently resolve. An empty installation is valid: `/api/capabilities` explains which profiles are unbound and why.
 
-### 1. Initialize
+## Quick start with Docker Compose
+
+Requirements:
+
+- Docker Engine
+- Docker Compose v2
+- NVIDIA Container Toolkit when the local llama.cpp provider should use an NVIDIA GPU
 
 ```bash
+git clone https://github.com/akovanda/Agent_UI.git
+cd Agent_UI
 ./hub init
+./hub registry plan
 ```
 
-Initialization builds the toolbox image, generates strong local secrets, creates Docker-managed volumes, and assigns unused high loopback ports. It does **not** assume that host port 5432—or any other familiar port—is free. The selected ports are persisted in `.env` and displayed with:
+`./hub init` allocates persistent high host ports, creates secrets, builds the toolbox image, creates Docker volumes, and renders an empty but valid runtime registry.
+
+### Register a GGUF in place
+
+A model can remain in a shared directory, a project directory, or any other existing path:
 
 ```bash
+./hub model register my-chat-model \
+  --provider local-gguf \
+  --host-path /mnt/shared/models/my-chat-model.gguf \
+  --capability chat \
+  --capability code \
+  --capability tools \
+  --runtime ctx-size=32768 \
+  --runtime n-gpu-layers=all \
+  --reasoning-transport flat \
+  --reasoning-level low,medium,high \
+  --developer-role \
+  --tool-calling
+```
+
+That command registers the parent directory as a read-only source and generates a Compose override such as:
+
+```yaml
+services:
+  llama:
+    volumes:
+      - type: bind
+        source: /mnt/shared/models
+        target: /model-sources/host-my-chat-model
+        read_only: true
+        bind:
+          create_host_path: false
+```
+
+The file is not copied.
+
+For several models in one directory, register the source once:
+
+```bash
+./hub source add shared-models \
+  --host-path /mnt/shared/models
+
+./hub model register chat-a \
+  --provider local-gguf \
+  --source shared-models \
+  --path team-a/chat-a.gguf \
+  --capability chat
+
+./hub model register story-b \
+  --provider local-gguf \
+  --source shared-models \
+  --path projects/story-b.gguf \
+  --capability chat \
+  --capability story \
+  --capability long_context
+```
+
+### Use managed storage instead
+
+Managed copying remains available when portability is more important than avoiding duplication:
+
+```bash
+./hub model register portable-model \
+  --provider local-gguf \
+  --source managed \
+  --path portable-model.gguf \
+  --capability chat
+
+./hub model import portable-model /path/to/portable-model.gguf
+```
+
+### Register a remote or separately hosted provider
+
+Any OpenAI-compatible provider can be registered without a local artifact:
+
+```bash
+./hub provider add image-provider \
+  --type openai_compatible \
+  --base-url http://image-service:8080/v1 \
+  --api-key-env IMAGE_PROVIDER_KEY \
+  --endpoint image=images/generations
+
+./hub model register local-image \
+  --provider image-provider \
+  --upstream-model diffusion-model \
+  --capability image
+```
+
+Add `IMAGE_PROVIDER_KEY=...` to the private `.env` file. The gateway container receives the complete environment file, while the registry stores only the environment-variable name.
+
+### Inspect and start
+
+```bash
+./hub registry validate
+./hub registry plan
+./hub model list
+./hub doctor
+./hub up
 ./hub ports
 ```
 
-All published ports bind to `127.0.0.1` by default. Containers continue to use stable internal ports such as PostgreSQL `5432`; only host mappings are randomized.
-
-### 2. Import the two models
-
-For an existing Stheno file:
+Optional services:
 
 ```bash
-./hub model import stheno-8b \
-  /path/to/Llama-3.1-8B-Stheno-v3.4.Q4_K_M.gguf
+./hub up --agent --observability
 ```
 
-The importer also accepts the common hyphenated filename and normalizes it to the catalog's canonical name.
+## Generic workload profiles
 
-For GPT-OSS 20B:
+The checked-in registry defines workload profiles but no concrete model bindings:
+
+- `auto`
+- `chat`
+- `chat-fast`
+- `chat-deep`
+- `code`
+- `story`
+- `vision`
+- `image`
+- `embedding`
+- `rerank`
+- `agent`
+
+Profiles can be selected directly as the OpenAI `model` value. Direct registered model IDs are also accepted when a client needs to bypass profile selection.
+
+The automatic profile uses deterministic registry rules. Control prefixes such as `/code`, `/story`, and `/vision` are stripped before the request reaches the model.
+
+## Reasoning and effort
+
+Reasoning support is declared per model, not inferred from its name. Four transports are supported:
+
+```yaml
+features:
+  reasoning:
+    transport: flat          # payload.reasoning_effort
+    field: reasoning_effort
+    levels: [low, medium, high]
+```
+
+```yaml
+features:
+  reasoning:
+    transport: object        # payload.reasoning.effort
+    field: reasoning
+    levels: [low, high]
+```
+
+```yaml
+features:
+  reasoning:
+    transport: chat_template # payload.chat_template_kwargs[field]
+    field: reasoning_effort
+    levels: [low, medium, high]
+```
+
+```yaml
+features:
+  reasoning:
+    transport: none
+```
+
+Clients can request effort with `reasoning_effort`, `reasoning.effort`, or `X-Reasoning-Effort`. Explicit unsupported requests fail clearly. A profile preference such as `chat-deep: high` is ignored when the selected model does not support reasoning, allowing the profile to remain usable.
+
+## Declarative setup for humans and agents
+
+The local overlay is stored in the Docker volume mounted at `/state/registry.local.yaml`. It can be managed entirely through commands or applied as one manifest:
 
 ```bash
-./hub model import gpt-oss-20b /path/to/gpt-oss-20b.gguf
+./hub registry schema > registry.schema.json
+./hub registry apply my-machine.yaml
+./hub registry plan
 ```
 
-Stheno can also be fetched from its cataloged Hugging Face source:
-
-```bash
-./hub model fetch stheno-8b
-```
-
-A GPT-OSS GGUF source can be supplied explicitly without changing code:
-
-```bash
-./hub model fetch gpt-oss-20b \
-  --repository OWNER/GPT-OSS-GGUF-REPOSITORY \
-  --file THE-EXACT-GGUF-FILENAME.gguf
-```
-
-Inspect and verify the managed model volume:
-
-```bash
-./hub model list
-./hub model verify gpt-oss-20b
-./hub model verify stheno-8b
-```
-
-### 3. Start the normal stack
-
-```bash
-./hub up
-```
-
-This starts PostgreSQL, llama.cpp, the gateway, Open WebUI, and SillyTavern. The command prints the selected URLs.
-
-Start optional components with Compose profiles:
-
-```bash
-./hub up --agent                    # include Hermes Agent
-./hub up --observability            # include Prometheus
-./hub up --agent --observability    # include both
-```
-
-### 4. Complete first-login setup
-
-Open WebUI is preconnected to the Local AI Hub gateway. The first registered user becomes its administrator. After creating the administrator account, set `OPEN_WEBUI_ENABLE_SIGNUP=false` in `.env` and restart Open WebUI:
-
-```bash
-./hub compose up -d --force-recreate open-webui
-```
-
-In SillyTavern, add an OpenAI-compatible connection:
+Machine-readable runtime discovery:
 
 ```text
-API URL: http://gateway:8000/v1
-API key: the GATEWAY_API_KEY value from .env
-Model:   storyteller
+GET /api/registry/schema        public schema
+GET /api/registry               effective registry
+GET /api/capabilities           resolved and unresolved profiles
+POST /api/routes/preview        deterministic route preview
+POST /api/admin/reload-registry reload after an external edit
 ```
 
-That URL is resolved inside the Compose network. From another host-side client, use the gateway URL printed by `./hub ports`.
+Mutating the registry is intentionally a local control-plane operation rather than an unauthenticated web API. A setup agent can generate and apply a manifest; a human uses the UI afterward.
 
-## Daily commands
+## Kubernetes and Helm
 
-```bash
-./hub status
-./hub logs gateway
-./hub logs llama
-./hub restart gateway
-./hub smoke
-./hub switch-regression 25
-./hub benchmark 3
-./hub doctor --gpu
-./hub backup /secure/backups/local-ai-hub
-./hub down
-```
-
-Model operations are atomic and update the generated llama.cpp preset. When inference is already running, the control plane restarts only llama.cpp so the new catalog is applied.
-
-```bash
-./hub model register my-model \
-  --filename My-Model-Q4_K_M.gguf \
-  --display-name "My Model" \
-  --role general \
-  --context 32768
-
-./hub model import my-model /path/to/My-Model-Q4_K_M.gguf
-```
-
-`model register` creates a selectable profile with the same id by default. Use
-`--profile-id another-name` to expose a different name or `--no-profile` for a backend that
-should not appear in the gateway model list.
-
-## Why one model at a time
-
-The Tesla T4 has 16 GiB of VRAM. Stheno is small enough to fit comfortably, while GPT-OSS 20B sits close to the practical memory ceiling once context and runtime buffers are included. The router is therefore configured with `models-max = 1`:
-
-1. Requests name a virtual profile or base model.
-2. The gateway serializes the transition.
-3. llama.cpp unloads the old model when necessary.
-4. The requested model is loaded with its own context and offload settings.
-5. The streamed response retains the GPU lease until completion.
-
-The default GPT-OSS profile uses a 65,536-token context, quantized KV cache, automatic fit, and eight CPU-MoE layers as a conservative T4 starting point. Benchmark the actual machine and tune `config/models/catalog.yaml` rather than assuming those values are optimal.
-
-## Kubernetes
-
-The Helm chart lives at `deploy/helm/local-ai-hub`. Helm and kubectl are included in the toolbox image.
-
-Render manifests:
+The generic chart is in `deploy/helm/agent-ui`.
 
 ```bash
 ./hub k8s render
+./hub k8s install
 ```
 
-Install or upgrade:
+Host paths do not automatically translate to Kubernetes. Each host-backed source used by a local model must declare one Kubernetes mapping:
 
-```bash
-./hub k8s install \
-  --set-string gateway.image.repository=registry.example/local-ai-hub-gateway \
-  --set-string gateway.image.tag=0.2.0
+- existing PVC
+- chart-created PVC
+- NFS
+- CSI
+- explicit `hostPath`
+
+Example source overlay:
+
+```yaml
+version: 2
+sources:
+  shared-models:
+    type: host
+    host_path: /mnt/shared/models
+    mount_path: /model-sources/shared-models
+    read_only: true
+    kubernetes:
+      type: existingClaim
+      claimName: shared-models-pvc
 ```
 
-Import model weights into the model PVC:
+`./hub registry k8s-values` refuses to render a referenced host source that lacks an explicit Kubernetes mapping.
 
-```bash
-./hub k8s model-import gpt-oss-20b /path/to/gpt-oss-20b.gguf
-./hub k8s model-import stheno-8b \
-  /path/to/Llama-3.1-8B-Stheno-v3.4.Q4_K_M.gguf
-```
+## Security notes
 
-Kubernetes uses ClusterIP services by default. PostgreSQL is not bound to a node port, so an existing host PostgreSQL installation does not conflict. Access frontends through Ingress or `kubectl port-forward`.
+- Host model sources are mounted read-only by default.
+- Docker bind mounts use `create_host_path: false` to catch typos rather than creating empty directories.
+- Provider secrets are referenced by environment-variable name and are not written into the registry.
+- Gateway mutation APIs are not exposed; registry changes happen through the local control plane.
+- Compose binds services to `127.0.0.1` unless explicitly changed.
+- Model weights, `.env`, generated overlays, and backups are gitignored.
 
-See [Kubernetes deployment](docs/KUBERNETES.md) for GPU operator, storage, image publishing, ingress, and upgrade details.
-
-## Security posture
-
-- Every Compose port binds to loopback unless `BIND_ADDRESS` is explicitly changed.
-- PostgreSQL gets a generated high host port and is never exposed publicly by default.
-- Secrets are generated into mode-`0600` `.env`, which is ignored by Git.
-- Models and application state use named Docker volumes.
-- Hermes is disabled by default and has tool-loop hard stops when enabled.
-- The Docker socket is **not** mounted into the gateway, model, frontend, or Hermes containers.
-- Kubernetes Secrets are created before Helm installation and referenced by name.
-- Ingress is disabled by default.
-
-For remote private access, prefer Tailscale, an authenticated reverse proxy, or a VPN. Do not publish llama.cpp, PostgreSQL, or Hermes directly to the public internet.
-
-## Documentation
-
-- [Pure Docker design](docs/PURE_DOCKER.md)
-- [UCS/T4 deployment](docs/DEPLOY_UCS_T4.md)
-- [Model management](docs/MODEL_MANAGEMENT.md)
-- [Model tuning](docs/MODEL_TUNING.md)
-- [Gateway API](docs/API.md)
-- [Open WebUI](docs/OPEN_WEBUI.md) and [SillyTavern](docs/SILLYTAVERN.md)
-- [Hermes Agent](docs/HERMES.md)
-- [Shared memory](docs/MEMORY.md)
-- [Kubernetes deployment](docs/KUBERNETES.md)
-- [Operations and recovery](docs/OPERATIONS.md)
-- [Testing and release gate](docs/TESTING.md)
-- [Security model](docs/SECURITY.md)
-- [Architecture](docs/ARCHITECTURE.md) and [ADRs](docs/adr/)
-- [Implementation plan](docs/BUILD_PLAN.md) and [backlog](backlog/)
-
-## Development and validation
-
-Development tooling is also containerized:
-
-```bash
-./hub test
-./hub lint
-```
-
-The release gate should additionally run `./hub smoke` on a host with Docker, NVIDIA Container Toolkit, the T4, and both model files. Offline unit tests cannot prove CUDA compatibility, model quality, token throughput, or long-context stability.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/MODEL_MANAGEMENT.md](docs/MODEL_MANAGEMENT.md), [docs/PURE_DOCKER.md](docs/PURE_DOCKER.md), and [docs/KUBERNETES.md](docs/KUBERNETES.md).
