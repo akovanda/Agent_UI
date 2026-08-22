@@ -1,0 +1,49 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "agent-ui.fullname" . }}
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                {{- if eq .service "gateway" }}
+                name: {{ include "agent-ui.fullname" $ }}-gateway
+                port:
+                  number: {{ $.Values.gateway.service.port }}
+                {{- else if eq .service "sillytavern" }}
+                name: {{ include "agent-ui.fullname" $ }}-sillytavern
+                port:
+                  number: {{ $.Values.sillyTavern.service.port }}
+                {{- else if eq .service "hermes" }}
+                name: {{ include "agent-ui.fullname" $ }}-hermes
+                port:
+                  number: {{ $.Values.hermes.service.dashboardPort }}
+                {{- else }}
+                name: {{ include "agent-ui.fullname" $ }}-openwebui
+                port:
+                  number: {{ $.Values.openWebUI.service.port }}
+                {{- end }}
+          {{- end }}
+    {{- end }}
+{{- end }}
