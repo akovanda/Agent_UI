@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: local-ai-hub-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  container-control-plane:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build toolbox
+        run: docker build -f deploy/docker/toolbox.Dockerfile -t local-ai-hub-toolbox:0.2.0 .
+
+      - name: Unit tests
+        run: |
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            --entrypoint bash \
+            local-ai-hub-toolbox:0.2.0 \
+            -lc 'python -m pytest -q'
+
+      - name: Lint Python and shell
+        run: |
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            --entrypoint bash \
+            local-ai-hub-toolbox:0.2.0 \
+            -lc 'ruff check . && ruff format --check . && bash -n hub ops/*.sh'
+
+      - name: Generate isolated Compose configuration
+        run: |
+          docker run --rm --network host \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            local-ai-hub-toolbox:0.2.0 \
+            env init --template /workspace/.env.example --output /workspace/.env
+          docker compose --env-file .env -f compose.yaml config >/tmp/compose.rendered.yaml
+
+      - name: Render model runtime configuration
+        run: |
+          mkdir -p /tmp/models /tmp/runtime /tmp/state /tmp/hermes
+          docker run --rm --env-file .env \
+            -v /tmp/models:/models \
+            -v /tmp/runtime:/runtime \
+            -v /tmp/state:/state \
+            -v /tmp/hermes:/hermes \
+            local-ai-hub-toolbox:0.2.0 \
+            runtime render --runtime-dir /runtime --hermes-dir /hermes
+          test -s /tmp/runtime/models.ini
+          test -s /tmp/runtime/profiles.json
+
+      - name: Helm lint and template
+        run: |
+          docker run --rm \
+            --entrypoint helm \
+            local-ai-hub-toolbox:0.2.0 \
+            lint /opt/local-ai-hub/deploy/helm/local-ai-hub
+          docker run --rm \
+            --entrypoint helm \
+            local-ai-hub-toolbox:0.2.0 \
+            template local-ai-hub /opt/local-ai-hub/deploy/helm/local-ai-hub \
+            --namespace local-ai-hub >/tmp/helm.rendered.yaml
+
+      - name: Build gateway image
+        run: docker build -f deploy/docker/gateway.Dockerfile -t local-ai-hub-gateway:0.2.0 .
+
+      - name: Secret and model tracking guard
+        run: |
+          ! git ls-files | grep -E '(^|/)(\.env|.*\.gguf|.*\.safetensors)$'
+          git diff --check
