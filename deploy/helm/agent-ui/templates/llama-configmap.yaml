@@ -1,0 +1,30 @@
+{{- if .Values.llama.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agent-ui.fullname" . }}-llama-config
+  labels:
+    {{- include "agent-ui.labels" . | nindent 4 }}
+data:
+  models.ini: |
+    version = 1
+
+    [*]
+    jinja = true
+    fit = true
+    fit-target = {{ .Values.llama.fitTargetMiB }}
+    parallel = 1
+    load-on-startup = false
+    stop-timeout = 180
+    dedup-cache-models = true
+    {{- range $modelID, $model := .Values.models }}
+    {{- if $model.enabled }}
+
+    [{{ $modelID }}]
+    model = {{ $model.containerPath }}
+      {{- range $key, $value := $model.runtime }}
+    {{ $key }} = {{ $value }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
+{{- end }}
