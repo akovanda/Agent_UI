@@ -3,9 +3,9 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "local-ai-hub-gateway"
-version = "0.2.0"
-description = "OpenAI-compatible orchestration gateway for a multi-interface local AI stack"
+name = "agent-ui-gateway"
+version = "0.3.0"
+description = "Capability-oriented local AI gateway for operator-registered models and backends"
 requires-python = ">=3.11"
 dependencies = [
   "asyncpg>=0.30,<1",
