@@ -1,301 +1,290 @@
-name: ${COMPOSE_PROJECT_NAME:-local-ai-hub}
+name: agent-ui
 
-x-service-defaults: &service-defaults
-  restart: unless-stopped
-  networks:
-    - hub-backend
+x-common-logging: &common-logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: "5"
 
 services:
   postgres:
-    <<: *service-defaults
-    image: ${POSTGRES_IMAGE}
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_ui}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: ${POSTGRES_DB:-agent_ui}
     ports:
-      - "${BIND_ADDRESS}:${POSTGRES_HOST_PORT}:5432"
+      - "${BIND_ADDRESS:-127.0.0.1}:${POSTGRES_HOST_PORT}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./config/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d postgres"]
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
       interval: 5s
       timeout: 5s
       retries: 30
-      start_period: 10s
+    logging: *common-logging
 
   config-init:
-    image: ${TOOLBOX_IMAGE}
-    build:
-      context: .
-      dockerfile: deploy/docker/toolbox.Dockerfile
-    restart: "no"
-    networks:
-      - hub-backend
-    environment:
-      LLAMA_FIT_TARGET_MIB: ${LLAMA_FIT_TARGET_MIB}
-      LLAMA_API_KEY: ${LLAMA_API_KEY}
-      GATEWAY_API_KEY: ${GATEWAY_API_KEY}
+    image: ${TOOLBOX_IMAGE:-agent-ui-toolbox:0.3.0}
+    env_file:
+      - .env
     command:
       - runtime
       - render
-      - --catalog
-      - /opt/local-ai-hub/config/models/catalog.yaml
+      - --registry
+      - /opt/agent-ui/config/registry.yaml
       - --overlay
-      - /state/catalog.local.yaml
-      - --models-dir
-      - /models
+      - /state/registry.local.yaml
       - --runtime-dir
       - /runtime
       - --hermes-dir
       - /hermes
     volumes:
-      - model-store:/models
+      - models:/models
       - runtime-config:/runtime
       - hub-state:/state
       - hermes-data:/hermes
+    restart: "no"
+    logging: *common-logging
 
   llama:
-    <<: *service-defaults
-    image: ${LLAMA_IMAGE}
-    depends_on:
-      config-init:
-        condition: service_completed_successfully
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}
+    restart: unless-stopped
+    gpus: all
     command:
       - --models-preset
       - /runtime/models.ini
-      - --models-max
-      - ${LLAMA_MODELS_MAX:-1}
       - --host
       - 0.0.0.0
       - --port
       - "8080"
+      - --api-key-file
+      - /runtime/llama_api_key
       - --metrics
       - --jinja
-      - --api-key
-      - ${LLAMA_API_KEY}
     ports:
-      - "${BIND_ADDRESS}:${LLAMA_HOST_PORT}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${LLAMA_HOST_PORT}:8080"
     volumes:
-      - model-store:/models:ro
+      - models:/models:ro
       - runtime-config:/runtime:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    shm_size: 2gb
+    depends_on:
+      config-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 10s
       timeout: 5s
-      retries: 60
-      start_period: 90s
+      retries: 30
+      start_period: 20s
+    logging: *common-logging
 
   gateway:
-    <<: *service-defaults
-    image: ${GATEWAY_IMAGE}
     build:
       context: .
-      dockerfile: deploy/docker/gateway.Dockerfile
+      dockerfile: services/gateway/Dockerfile
+    image: ${GATEWAY_IMAGE:-agent-ui-gateway:0.3.0}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-agent_ui}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agent_ui}
+      REGISTRY_CONFIG_PATH: /runtime/registry.json
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY}
+      DEFAULT_USER_ID: ${DEFAULT_USER_ID:-local-user}
+      MODEL_COORDINATOR_MODE: ${MODEL_COORDINATOR_MODE:-explicit}
+      MODEL_LOAD_TIMEOUT_SECONDS: ${MODEL_LOAD_TIMEOUT_SECONDS:-360}
+      MODEL_POLL_INTERVAL_SECONDS: ${MODEL_POLL_INTERVAL_SECONDS:-1}
+      MEMORY_ENABLED: ${MEMORY_ENABLED:-true}
+      MEMORY_REQUIRED: ${MEMORY_REQUIRED:-false}
+      MEMORY_TOP_K: ${MEMORY_TOP_K:-6}
+      MEMORY_MAX_CHARS: ${MEMORY_MAX_CHARS:-6000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:8001,http://127.0.0.1:8001}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${GATEWAY_HOST_PORT}:8000"
+    volumes:
+      - runtime-config:/runtime:ro
+      - gateway-state:/var/lib/agent-ui
     depends_on:
       postgres:
         condition: service_healthy
+      config-init:
+        condition: service_completed_successfully
       llama:
         condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/local_ai_hub
-      POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/local_ai_hub
-      LLAMA_BASE_URL: http://llama:8080
-      LLAMA_CPP_BASE_URL: http://llama:8080
-      INFERENCE_BASE_URL: http://llama:8080
-      LLAMA_API_KEY: ${LLAMA_API_KEY}
-      GATEWAY_API_KEY: ${GATEWAY_API_KEY}
-      LOCAL_AI_HUB_API_KEY: ${GATEWAY_API_KEY}
-      PROFILE_CONFIG_PATH: /runtime/profiles.json
-      LOCAL_AI_HUB_PROFILE_CONFIG_PATH: /runtime/profiles.json
-      PROFILE_CATALOG_PATH: /runtime/profiles.json
-      MODEL_CATALOG_PATH: /runtime/catalog.resolved.json
-      LOCAL_AI_HUB_PROFILE_CATALOG_PATH: /runtime/profiles.json
-      LOCAL_AI_HUB_MODEL_CATALOG_PATH: /runtime/catalog.resolved.json
-      STATE_DIR: /var/lib/local-ai-hub
-      LOCAL_AI_HUB_STATE_DIR: /var/lib/local-ai-hub
-      WORKERS: ${GATEWAY_WORKERS:-1}
-      GATEWAY_HOST: 0.0.0.0
-      GATEWAY_PORT: 8000
-      GATEWAY_APP: ${GATEWAY_APP:-}
-    ports:
-      - "${BIND_ADDRESS}:${GATEWAY_HOST_PORT}:8000"
-    volumes:
-      - gateway-state:/var/lib/local-ai-hub
-      - runtime-config:/runtime:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)
       interval: 10s
       timeout: 5s
       retries: 30
-      start_period: 20s
+      start_period: 15s
+    logging: *common-logging
 
   open-webui:
-    <<: *service-defaults
-    image: ${OPEN_WEBUI_IMAGE}
-    depends_on:
-      gateway:
-        condition: service_healthy
+    image: ${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:main}
+    restart: unless-stopped
     environment:
       ENABLE_OLLAMA_API: "false"
       ENABLE_OPENAI_API: "true"
       OPENAI_API_BASE_URL: http://gateway:8000/v1
       OPENAI_API_KEY: ${GATEWAY_API_KEY}
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/open_webui
       WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      ENABLE_SIGNUP: ${OPEN_WEBUI_ENABLE_SIGNUP:-false}
       WEBUI_AUTH: "true"
-      ENABLE_SIGNUP: ${OPEN_WEBUI_ENABLE_SIGNUP:-true}
-      ENABLE_MEMORIES: ${OPEN_WEBUI_ENABLE_MEMORIES:-false}
-      ENABLE_MEMORY_SYSTEM_CONTEXT: "true"
-      ENABLE_PERSISTENT_CONFIG: "false"
-      VECTOR_DB: pgvector
-      PGVECTOR_DB_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/open_webui
-      RAG_EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      ENABLE_MEMORIES: "true"
+      ENABLE_IMAGE_GENERATION: ${OPEN_WEBUI_ENABLE_IMAGE_GENERATION:-false}
+      IMAGE_GENERATION_ENGINE: openai
+      IMAGES_OPENAI_API_BASE_URL: http://gateway:8000/v1
+      IMAGES_OPENAI_API_KEY: ${GATEWAY_API_KEY}
+      IMAGE_GENERATION_MODEL: image
+      ENABLE_VERSION_UPDATE_CHECK: "false"
       DO_NOT_TRACK: "true"
       ANONYMIZED_TELEMETRY: "false"
-      SCARF_NO_ANALYTICS: "true"
     ports:
-      - "${BIND_ADDRESS}:${OPEN_WEBUI_HOST_PORT}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${OPEN_WEBUI_HOST_PORT}:8080"
     volumes:
       - open-webui-data:/app/backend/data
+    depends_on:
+      gateway:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 30
-      start_period: 45s
+      start_period: 30s
+    logging: *common-logging
 
   sillytavern:
-    <<: *service-defaults
-    image: ${SILLYTAVERN_IMAGE}
-    depends_on:
-      gateway:
-        condition: service_healthy
+    image: ${SILLYTAVERN_IMAGE:-ghcr.io/sillytavern/sillytavern:latest}
+    restart: unless-stopped
     environment:
       NODE_ENV: production
       FORCE_COLOR: "1"
       SILLYTAVERN_HEARTBEATINTERVAL: "30"
     ports:
-      - "${BIND_ADDRESS}:${SILLYTAVERN_HOST_PORT}:8000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${SILLYTAVERN_HOST_PORT}:8000"
     volumes:
       - sillytavern-config:/home/node/app/config
       - sillytavern-data:/home/node/app/data
       - sillytavern-plugins:/home/node/app/plugins
       - sillytavern-extensions:/home/node/app/public/scripts/extensions/third-party
+    depends_on:
+      gateway:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "src/healthcheck.js"]
       interval: 30s
       timeout: 10s
-      retries: 20
-      start_period: 30s
+      retries: 3
+      start_period: 20s
+    logging: *common-logging
+
+  toolbox:
+    image: ${TOOLBOX_IMAGE:-agent-ui-toolbox:0.3.0}
+    env_file:
+      - .env
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - models:/models
+      - runtime-config:/runtime
+      - hub-state:/state
+      - hermes-data:/hermes
+    profiles: [toolbox]
 
   hermes:
-    <<: *service-defaults
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    restart: unless-stopped
+    command: [gateway, run]
     profiles: [agent]
-    image: ${HERMES_IMAGE}
-    depends_on:
-      config-init:
-        condition: service_completed_successfully
-      llama:
-        condition: service_healthy
-      gateway:
-        condition: service_healthy
-    command: ["gateway", "run"]
+    env_file:
+      - .env
     environment:
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: 0.0.0.0
       API_SERVER_KEY: ${HERMES_API_KEY}
-      API_SERVER_CORS_ORIGINS: "*"
-      HERMES_DASHBOARD: ${HERMES_DASHBOARD_ENABLED:-1}
+      API_SERVER_CORS_ORIGINS: ${HERMES_API_SERVER_CORS_ORIGINS:-http://localhost}
+      HERMES_DASHBOARD: "1"
       HERMES_DASHBOARD_HOST: 0.0.0.0
-      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_USERNAME}
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_USERNAME:-admin}
       HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_PASSWORD}
-      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${WEBUI_SECRET_KEY}
-      HERMES_UID: "10000"
-      HERMES_GID: "10000"
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${HERMES_API_KEY}
+      HERMES_UID: ${HERMES_UID:-1000}
+      HERMES_GID: ${HERMES_GID:-1000}
     ports:
-      - "${BIND_ADDRESS}:${HERMES_API_HOST_PORT}:8642"
-      - "${BIND_ADDRESS}:${HERMES_DASHBOARD_HOST_PORT}:9119"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HERMES_API_HOST_PORT}:8642"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HERMES_DASHBOARD_HOST_PORT}:9119"
     volumes:
       - hermes-data:/opt/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -H 'Authorization: Bearer ${HERMES_API_KEY}' http://127.0.0.1:8642/v1/models >/dev/null"]
-      interval: 20s
-      timeout: 10s
-      retries: 30
-      start_period: 60s
+    depends_on:
+      gateway:
+        condition: service_healthy
+    logging: *common-logging
 
   prometheus:
-    <<: *service-defaults
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:latest}
+    restart: unless-stopped
     profiles: [observability]
-    image: ${PROMETHEUS_IMAGE}
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --web.enable-lifecycle
     ports:
-      - "${BIND_ADDRESS}:${PROMETHEUS_HOST_PORT}:9090"
+      - "${BIND_ADDRESS:-127.0.0.1}:${PROMETHEUS_HOST_PORT}:9090"
     volumes:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - runtime-config:/run/secrets:ro
       - prometheus-data:/prometheus
-
-  toolbox:
-    image: ${TOOLBOX_IMAGE}
-    build:
-      context: .
-      dockerfile: deploy/docker/toolbox.Dockerfile
-    profiles: [tools]
-    networks:
-      - hub-backend
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      GATEWAY_API_KEY: ${GATEWAY_API_KEY}
-      LLAMA_API_KEY: ${LLAMA_API_KEY}
-    volumes:
-      - model-store:/models
-      - runtime-config:/runtime
-      - hub-state:/state
-      - hermes-data:/hermes
-
-networks:
-  hub-backend:
-    driver: bridge
-    internal: false
+    depends_on:
+      gateway:
+        condition: service_healthy
+    logging: *common-logging
 
 volumes:
   postgres-data:
     name: ${POSTGRES_VOLUME}
-  model-store:
+    external: true
+  models:
     name: ${MODELS_VOLUME}
+    external: true
   runtime-config:
     name: ${RUNTIME_CONFIG_VOLUME}
+    external: true
   hub-state:
     name: ${HUB_STATE_VOLUME}
+    external: true
   gateway-state:
     name: ${GATEWAY_STATE_VOLUME}
+    external: true
   open-webui-data:
     name: ${OPEN_WEBUI_VOLUME}
+    external: true
   sillytavern-config:
     name: ${SILLYTAVERN_CONFIG_VOLUME}
+    external: true
   sillytavern-data:
     name: ${SILLYTAVERN_DATA_VOLUME}
+    external: true
   sillytavern-plugins:
     name: ${SILLYTAVERN_PLUGINS_VOLUME}
+    external: true
   sillytavern-extensions:
     name: ${SILLYTAVERN_EXTENSIONS_VOLUME}
+    external: true
   hermes-data:
     name: ${HERMES_VOLUME}
+    external: true
   prometheus-data:
     name: ${PROMETHEUS_VOLUME}
+    external: true
