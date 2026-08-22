@@ -1,0 +1,45 @@
+version: 2
+models:
+  my-local-text-model:
+    display_name: My Local Text Model
+    description: Existing GGUF linked in place; no copy is made.
+    backend: local-llama
+    upstream_model: my-local-text-model
+    priority: 100
+    capabilities:
+      chat: {}
+      code:
+        endpoints: [chat, completions, infill]
+      story: {}
+      agent: {}
+    features:
+      tools: true
+      structured_output: true
+      reasoning:
+        supported: true
+        request_field: reasoning_effort
+        transport: body
+        values:
+          fast: low
+          balanced: medium
+          deep: high
+          none: null
+        unsupported_policy: reject
+    artifact:
+      kind: host_path
+      path: /srv/models/example-model.gguf
+      read_only: true
+    runtime:
+      ctx-size: 32768
+      n-gpu-layers: auto
+      cache-type-k: q8_0
+      cache-type-v: q8_0
+experiences:
+  chat:
+    capability: chat
+  code:
+    capability: code
+  story:
+    capability: story
+  agent:
+    capability: agent

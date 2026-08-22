@@ -1,16 +1,52 @@
+{{- if .Values.gateway.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "local-ai-hub.fullname" . }}-gateway-runtime
+  name: {{ include "local-ai-hub.fullname" . }}-gateway
   labels:
     {{- include "local-ai-hub.labels" . | nindent 4 }}
     app.kubernetes.io/component: gateway
 data:
-  profiles.json: |
-    {{- toPrettyJson .Values.hubProfiles | nindent 4 }}
   catalog.resolved.json: |
     {
-      "version": 1,
-      "models": {{ toJson .Values.models }},
-      "profiles": {{ toJson .Values.hubProfiles }}
+      "version": 2,
+      "backends": {
+        "local-llama": {
+          "kind": "llama.cpp",
+          "enabled": {{ .Values.llama.enabled }},
+          "base_url": "http://{{ include "local-ai-hub.fullname" . }}-llama:{{ .Values.llama.service.port }}",
+          "api_key_env": "LLAMA_API_KEY",
+          "coordinator": "explicit",
+          "serialize_requests": true,
+          "endpoints": {
+            "chat": "/v1/chat/completions",
+            "completions": "/v1/completions",
+            "infill": "/infill",
+            "embeddings": "/v1/embeddings",
+            "rerank": "/v1/rerank"
+          }
+        }
+      },
+      "models": {
+        {{- $first := true }}
+        {{- range $id, $model := .Values.models }}
+        {{- if $model.enabled }}
+        {{- if not $first }},{{ end }}
+        {{ $id | quote }}: {
+          "display_name": {{ default $id $model.displayName | quote }},
+          "enabled": true,
+          "backend": {{ default "local-llama" $model.backend | quote }},
+          "upstream_model": {{ default $id $model.upstreamModel | quote }},
+          "priority": {{ default 0 $model.priority }},
+          "capabilities": {{ toJson (default (dict "chat" (dict)) $model.capabilities) }},
+          "features": {{ toJson (default (dict) $model.features) }},
+          "artifact": {"kind": "container_path", "path": {{ $model.containerPath | quote }}},
+          "runtime": {}
+        }
+        {{- $first = false }}
+        {{- end }}
+        {{- end }}
+      },
+      "experiences": {{ toJson (ternary .Values.experiences .Values.hubProfiles (not (empty .Values.experiences))) }}
     }
+{{- end }}

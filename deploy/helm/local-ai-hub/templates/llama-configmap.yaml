@@ -1,3 +1,4 @@
+{{- if .Values.llama.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -20,21 +21,15 @@ data:
     {{- range $id, $model := .Values.models }}
     {{- if $model.enabled }}
 
-    [{{ $id }}]
-    model = /models/{{ $model.filename }}
-    ctx-size = {{ $model.contextSize }}
-    n-gpu-layers = {{ $model.gpuLayers }}
-    {{- if gt (int $model.cpuMoeLayers) 0 }}
+    [{{ default $id $model.upstreamModel }}]
+    model = {{ $model.containerPath }}
+    ctx-size = {{ default 8192 $model.contextSize }}
+    n-gpu-layers = {{ default "auto" $model.gpuLayers }}
+    {{- if $model.cpuMoeLayers }}
     n-cpu-moe = {{ $model.cpuMoeLayers }}
     {{- end }}
-    cache-type-k = {{ $model.cacheTypeK }}
-    cache-type-v = {{ $model.cacheTypeV }}
-    flash-attn = auto
-    fit = true
-    fit-target = {{ $.Values.llama.fitTargetMiB }}
-    parallel = 1
-    jinja = true
-    load-on-startup = false
-    stop-timeout = 180
+    cache-type-k = {{ default "q8_0" $model.cacheTypeK }}
+    cache-type-v = {{ default "q8_0" $model.cacheTypeV }}
     {{- end }}
     {{- end }}
+{{- end }}

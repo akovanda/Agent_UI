@@ -1,106 +1,81 @@
-# Open WebUI Configuration
+# Open WebUI
 
-Open WebUI is the general-purpose browser and mobile interface. It talks to the Local AI Hub
-gateway—not directly to llama.cpp—so profile routing, GPU serialization, shared memory,
-authentication, and response metadata remain consistent across clients.
+Open WebUI is Agent UI's default human-facing interface. It connects only to the authenticated gateway, not directly to local or remote inference backends.
 
-## Seeded connection
+## Connection
 
-Compose starts Open WebUI with:
+Compose configures:
 
 ```text
-Base URL: http://gateway:8000/v1
-API key:  GATEWAY_API_KEY
-Default:  assistant
+OPENAI_API_BASE_URL=http://gateway:8000/v1
+OPENAI_API_KEY=<GATEWAY_API_KEY>
 ```
 
-After first launch:
+The model picker receives stable experience IDs and directly registered model IDs from `/v1/models`.
 
-1. create the initial local administrator;
-2. set `OPEN_WEBUI_ENABLE_SIGNUP=false` in `.env`;
-3. recreate Open WebUI with `./hub compose up -d --force-recreate open-webui`;
-4. confirm the model selector contains `assistant`, `assistant-fast`, `assistant-deep`,
-   `storyteller`, and `auto`;
-5. send one streamed request to each relevant profile;
-6. verify the gateway logs and response headers report the intended backend.
+## Experience entries
 
-Open WebUI persists provider configuration in PostgreSQL and local application data in its named
-Docker volume. Environment variables seed the initial configuration; administrator changes in the
-UI become persistent application state and must be included in backup/restore testing.
+Typical entries:
 
-## Memory ownership
+- `chat`
+- `code`
+- `story`
+- `image`
+- `agent`
 
-The gateway is the authoritative cross-interface memory layer. Its records are scoped by user and
-namespace and are injected as explicitly untrusted reference material. To avoid two independent
-systems silently injecting competing facts, the default deployment sets:
+An experience may appear with `available: false` before a capable model is registered. Setup state is visible at `/api/setup/status`; inference fails with a clear `model_unavailable` error rather than selecting an incompatible model.
+
+## Workspace models
+
+Open WebUI Workspace Models can layer UI-specific prompts, knowledge, tools, and display names on top of Agent UI experiences. Keep the underlying model field stable:
+
+```text
+base model: code
+workspace name: Repository Engineer
+```
+
+This avoids coupling Open WebUI exports to a physical model name.
+
+## Files and RAG
+
+Open WebUI can manage its own document collections and uses PostgreSQL/pgvector in the reference stack. An embedding-capable model may be registered through Agent UI, or Open WebUI may use its own embedding configuration.
+
+Treat retrieved text as untrusted source material. Do not place tool credentials or privileged system instructions inside documents.
+
+## Images
+
+Open WebUI can use Agent UI's `/v1/images/generations` route when an image-capable backend is registered. It can also connect directly to an image workflow service using Open WebUI's native image settings. The latter is useful when the workflow engine exposes controls not represented by the OpenAI image request format.
+
+## Code
+
+Select the `code` experience for code chat and review. Tools or IDE clients may call the same gateway through chat, completions, or infill routes when the selected model declares the corresponding capability.
+
+## Story work
+
+The `story` experience is available in Open WebUI for ordinary creative chat. Use the optional story workspace when character cards, lorebooks, group roleplay, or scene-specific context management are required.
+
+## Reasoning effort
+
+Open WebUI request parameters may include `reasoning_effort`; custom functions or clients can set `X-Reasoning-Effort`. Agent UI maps the stable value through the selected model's feature declaration.
+
+## Tools
+
+A model's `features.tools: true` declaration means the backend can represent tool calls. It does not grant access. Configure tools in Open WebUI and begin with read-only operations. Require approval for writes, shell commands, infrastructure changes, and external communications.
+
+## Memory
+
+The reference Compose stack disables Open WebUI's independent personal memory by default:
 
 ```text
 OPEN_WEBUI_ENABLE_MEMORIES=false
 ```
 
-Open WebUI still owns:
+Agent UI shared memory remains available for experiences that enable it. Running both systems is possible, but duplicates and conflicting facts are harder to reason about.
 
-- conversation history;
-- uploaded files and RAG metadata;
-- user and account settings;
-- provider and model-display configuration;
-- its own pgvector-backed document collections.
+## Users
 
-The gateway owns durable cross-client memories. SillyTavern owns campaign-native character cards,
-lorebooks, summaries, and active-scene state. Open WebUI memory can be deliberately enabled later,
-but that changes the prompt and governance model and should be evaluated as a separate feature.
+Open WebUI authentication is enabled. The first account becomes administrator in the standard first-run flow. For multi-user memory isolation, ensure a stable user identifier is forwarded to Agent UI through `X-Agent-UI-User`; otherwise the configured default user is used.
 
-## Recommended profiles
+## Exposure
 
-| Profile | Intended use |
-|---|---|
-| `assistant` | Balanced daily chat, knowledge, coding, and technical work |
-| `assistant-fast` | Routine interactions with lower reasoning effort |
-| `assistant-deep` | Difficult debugging, planning, and technical synthesis |
-| `storyteller` | Explicit creative writing from the general UI |
-| `auto` | Deterministic assistant/story selection when manual choice is unnecessary |
-
-Direct backend aliases and the hidden `hermes-agent` gateway profile are operational interfaces,
-not ordinary Open WebUI choices.
-
-## Hermes connection
-
-After the normal gateway path is stable, add Hermes as a visibly separate OpenAI-compatible
-provider:
-
-```text
-Base URL: http://hermes:8642/v1
-API key:  HERMES_API_KEY
-```
-
-Hermes itself routes its model calls back through the gateway's hidden `hermes-agent` profile. Do
-not replace the normal gateway provider with Hermes; ordinary chat must remain available when the
-agent runtime is stopped or misconfigured.
-
-## Private remote access
-
-All host ports bind to loopback by default. For a phone or another computer, use Tailscale, a VPN,
-an SSH tunnel, or an authenticated TLS reverse proxy. Preserve Open WebUI authentication and apply
-network-edge authentication/rate limits where appropriate.
-
-Do not expose the gateway, llama.cpp, or PostgreSQL ports directly to the public internet, and do
-not place `GATEWAY_API_KEY` in public browser-side configuration.
-
-## Backup and validation
-
-Use the containerized backup command:
-
-```bash
-./hub backup /secure/backups/local-ai-hub
-```
-
-The command quiesces Open WebUI, dumps its PostgreSQL database, and archives its named data volume.
-After an upgrade or restore, verify:
-
-- account sign-in and signup policy;
-- provider URL and API key;
-- advertised profiles;
-- one streamed assistant response;
-- one prior conversation and uploaded file;
-- one RAG collection/query;
-- persistence across a container restart.
+Open WebUI binds to loopback by default. For remote access, use a VPN or authenticated TLS reverse proxy. Do not expose the gateway or underlying inference services merely because the UI has authentication.

@@ -1,9 +1,9 @@
-name: ${COMPOSE_PROJECT_NAME:-local-ai-hub}
+name: ${COMPOSE_PROJECT_NAME:-agent-ui}
 
 x-service-defaults: &service-defaults
   restart: unless-stopped
   networks:
-    - hub-backend
+    - agent-ui-backend
 
 services:
   postgres:
@@ -33,7 +33,7 @@ services:
       dockerfile: deploy/docker/toolbox.Dockerfile
     restart: "no"
     networks:
-      - hub-backend
+      - agent-ui-backend
     environment:
       LLAMA_FIT_TARGET_MIB: ${LLAMA_FIT_TARGET_MIB}
       LLAMA_API_KEY: ${LLAMA_API_KEY}
@@ -42,7 +42,7 @@ services:
       - runtime
       - render
       - --catalog
-      - /opt/local-ai-hub/config/models/catalog.yaml
+      - /opt/agent-ui/config/models/catalog.yaml
       - --overlay
       - /state/catalog.local.yaml
       - --models-dir
@@ -54,7 +54,7 @@ services:
     volumes:
       - model-store:/models
       - runtime-config:/runtime
-      - hub-state:/state
+      - agent-ui-state:/state
       - hermes-data:/hermes
 
   llama:
@@ -107,31 +107,29 @@ services:
         condition: service_healthy
       llama:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/local_ai_hub
-      POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/local_ai_hub
       LLAMA_BASE_URL: http://llama:8080
-      LLAMA_CPP_BASE_URL: http://llama:8080
-      INFERENCE_BASE_URL: http://llama:8080
       LLAMA_API_KEY: ${LLAMA_API_KEY}
       GATEWAY_API_KEY: ${GATEWAY_API_KEY}
-      LOCAL_AI_HUB_API_KEY: ${GATEWAY_API_KEY}
-      PROFILE_CONFIG_PATH: /runtime/profiles.json
-      LOCAL_AI_HUB_PROFILE_CONFIG_PATH: /runtime/profiles.json
-      PROFILE_CATALOG_PATH: /runtime/profiles.json
+      DEFAULT_USER_ID: ${DEFAULT_USER_ID:-local-user}
+      PROFILE_CONFIG_PATH: /runtime/catalog.resolved.json
       MODEL_CATALOG_PATH: /runtime/catalog.resolved.json
-      LOCAL_AI_HUB_PROFILE_CATALOG_PATH: /runtime/profiles.json
-      LOCAL_AI_HUB_MODEL_CATALOG_PATH: /runtime/catalog.resolved.json
-      STATE_DIR: /var/lib/local-ai-hub
-      LOCAL_AI_HUB_STATE_DIR: /var/lib/local-ai-hub
+      STATE_DIR: /var/lib/agent-ui
       WORKERS: ${GATEWAY_WORKERS:-1}
       GATEWAY_HOST: 0.0.0.0
       GATEWAY_PORT: 8000
       GATEWAY_APP: ${GATEWAY_APP:-}
+      EXTERNAL_OPENAI_BASE_URL: ${EXTERNAL_OPENAI_BASE_URL:-}
+      EXTERNAL_OPENAI_API_KEY: ${EXTERNAL_OPENAI_API_KEY:-}
+      IMAGE_API_BASE_URL: ${IMAGE_API_BASE_URL:-}
+      IMAGE_API_KEY: ${IMAGE_API_KEY:-}
     ports:
       - "${BIND_ADDRESS}:${GATEWAY_HOST_PORT}:8000"
     volumes:
-      - gateway-state:/var/lib/local-ai-hub
+      - gateway-state:/var/lib/agent-ui
       - runtime-config:/runtime:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
@@ -177,6 +175,7 @@ services:
 
   sillytavern:
     <<: *service-defaults
+    profiles: [story]
     image: ${SILLYTAVERN_IMAGE}
     depends_on:
       gateway:
@@ -206,8 +205,6 @@ services:
     depends_on:
       config-init:
         condition: service_completed_successfully
-      llama:
-        condition: service_healthy
       gateway:
         condition: service_healthy
     command: ["gateway", "run"]
@@ -257,7 +254,7 @@ services:
       dockerfile: deploy/docker/toolbox.Dockerfile
     profiles: [tools]
     networks:
-      - hub-backend
+      - agent-ui-backend
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -266,11 +263,11 @@ services:
     volumes:
       - model-store:/models
       - runtime-config:/runtime
-      - hub-state:/state
+      - agent-ui-state:/state
       - hermes-data:/hermes
 
 networks:
-  hub-backend:
+  agent-ui-backend:
     driver: bridge
     internal: false
 
@@ -281,7 +278,7 @@ volumes:
     name: ${MODELS_VOLUME}
   runtime-config:
     name: ${RUNTIME_CONFIG_VOLUME}
-  hub-state:
+  agent-ui-state:
     name: ${HUB_STATE_VOLUME}
   gateway-state:
     name: ${GATEWAY_STATE_VOLUME}

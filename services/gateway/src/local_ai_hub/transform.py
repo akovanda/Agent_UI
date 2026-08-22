@@ -12,6 +12,48 @@ class InvalidChatRequest(ValueError):
     pass
 
 
+def _apply_reasoning(
+    payload: dict[str, Any],
+    resolved: ResolvedProfile,
+    reasoning_override: str | None,
+) -> None:
+    requested = payload.pop("reasoning_effort", None)
+    effort = reasoning_override or requested or resolved.profile.reasoning_effort
+    if effort is None:
+        return
+    if not isinstance(effort, str) or not effort:
+        raise InvalidChatRequest("reasoning effort must be a non-empty string")
+
+    feature = resolved.model.features.reasoning
+    if feature is None or not feature.supported:
+        policy = feature.unsupported_policy if feature else "ignore"
+        if policy == "reject":
+            raise InvalidChatRequest(
+                f"model {resolved.backend_model!r} does not support reasoning effort"
+            )
+        return
+
+    if feature.values:
+        if effort not in feature.values:
+            accepted = ", ".join(sorted(feature.values))
+            raise InvalidChatRequest(
+                f"unsupported reasoning effort {effort!r}; accepted values: {accepted}"
+            )
+        mapped: Any = feature.values[effort]
+    else:
+        mapped = effort
+
+    if mapped is None or mapped is False:
+        return
+    if feature.transport == "chat_template_kwargs":
+        kwargs = payload.setdefault("chat_template_kwargs", {})
+        if not isinstance(kwargs, dict):
+            raise InvalidChatRequest("chat_template_kwargs must be an object")
+        kwargs[feature.request_field] = mapped
+    else:
+        payload[feature.request_field] = mapped
+
+
 def prepare_chat_payload(
     raw: dict[str, Any],
     resolved: ResolvedProfile,
@@ -27,24 +69,12 @@ def prepare_chat_payload(
 
     for key, value in resolved.profile.defaults.items():
         payload.setdefault(key, value)
-
-    requested_effort = payload.pop("reasoning_effort", None)
-    effort = reasoning_override or requested_effort or resolved.profile.reasoning_effort
-    if effort not in {None, "low", "medium", "high"}:
-        raise InvalidChatRequest("reasoning_effort must be low, medium, or high")
-
-    is_gpt_oss = resolved.backend_model.startswith("gpt-oss")
-    if is_gpt_oss and effort:
-        # llama.cpp maps this OpenAI-compatible field into the GPT-OSS Harmony
-        # template's reasoning_effort argument. Keeping it structured avoids
-        # accidentally consuming the only developer-message slot with a
-        # hand-written "Reasoning:" system message.
-        payload["reasoning_effort"] = effort
+    _apply_reasoning(payload, resolved, reasoning_override)
 
     instruction_sections: list[str] = []
     if resolved.profile.system_prompt:
         instruction_sections.append(
-            _section("Local profile instructions", resolved.profile.system_prompt.strip())
+            _section("Experience instructions", resolved.profile.system_prompt.strip())
         )
 
     conversation_messages: list[dict[str, Any]] = []
@@ -68,7 +98,8 @@ def prepare_chat_payload(
         instruction_sections.append(_section("Retrieved memory", memory_context))
 
     if instruction_sections:
-        instruction_role = "developer" if is_gpt_oss else "system"
+        configured_role = resolved.model.metadata.get("instruction_role", "system")
+        instruction_role = configured_role if configured_role in {"system", "developer"} else "system"
         conversation_messages.insert(
             0,
             {
@@ -78,7 +109,22 @@ def prepare_chat_payload(
         )
 
     payload["messages"] = conversation_messages
-    payload["model"] = resolved.backend_model
+    payload["model"] = resolved.model.upstream_model or resolved.backend_model
+    return payload
+
+
+def prepare_passthrough_payload(
+    raw: dict[str, Any],
+    resolved: ResolvedProfile,
+    reasoning_override: str | None = None,
+) -> dict[str, Any]:
+    """Apply generic defaults/model mapping to non-chat OpenAI-compatible calls."""
+
+    payload = deepcopy(raw)
+    for key, value in resolved.profile.defaults.items():
+        payload.setdefault(key, value)
+    _apply_reasoning(payload, resolved, reasoning_override)
+    payload["model"] = resolved.model.upstream_model or resolved.backend_model
     return payload
 
 

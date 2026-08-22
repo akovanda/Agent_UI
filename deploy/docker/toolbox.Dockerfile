@@ -28,21 +28,18 @@ RUN apt-get update \
     && chmod 0755 /usr/local/bin/helm \
     && rm -rf /tmp/helm.tar.gz "/tmp/linux-${KARCH}"
 
-# Install the gateway and its complete test/lint dependency set in the toolbox.
-# The source is copied before operational scripts so Docker invalidates only the
-# layers affected by a given kind of change.
-COPY pyproject.toml README.md /tmp/local-ai-hub/
-COPY services/gateway/src /tmp/local-ai-hub/services/gateway/src
+COPY pyproject.toml README.md /tmp/agent-ui/
+COPY services/gateway/src /tmp/agent-ui/services/gateway/src
 RUN python -m pip install --no-cache-dir \
-      "/tmp/local-ai-hub[dev]" \
+      "/tmp/agent-ui[dev]" \
       "huggingface_hub>=0.34,<1" \
       "requests>=2.32,<3" \
-    && rm -rf /tmp/local-ai-hub
+    && rm -rf /tmp/agent-ui
 
-COPY ops /opt/local-ai-hub/ops
-COPY config /opt/local-ai-hub/config
-COPY deploy/helm /opt/local-ai-hub/deploy/helm
-RUN chmod +x /opt/local-ai-hub/ops/hubctl.py /opt/local-ai-hub/ops/*.sh 2>/dev/null || true
+COPY ops /opt/agent-ui/ops
+COPY config /opt/agent-ui/config
+COPY deploy/helm /opt/agent-ui/deploy/helm
+RUN chmod +x /opt/agent-ui/ops/hubctl.py /opt/agent-ui/ops/*.sh 2>/dev/null || true
 
 WORKDIR /workspace
-ENTRYPOINT ["python", "/opt/local-ai-hub/ops/hubctl.py"]
+ENTRYPOINT ["python", "/opt/agent-ui/ops/hubctl.py"]

@@ -1,3 +1,4 @@
+{{- if .Values.llama.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,12 +8,12 @@ metadata:
     app.kubernetes.io/component: llama
 spec:
   replicas: 1
-  strategy:
-    type: Recreate
   selector:
     matchLabels:
       {{- include "local-ai-hub.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: llama
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -20,37 +21,28 @@ spec:
         app.kubernetes.io/component: llama
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/llama-configmap.yaml") . | sha256sum }}
-        {{- toYaml .Values.global.podAnnotations | nindent 8 }}
     spec:
-      securityContext:
-        fsGroup: 1000
-      {{- with .Values.llama.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.llama.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.llama.affinity }}
-      affinity:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: llama
           image: "{{ .Values.llama.image.repository }}:{{ .Values.llama.image.tag }}"
-          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          command: ["/bin/sh", "-ec"]
+          imagePullPolicy: {{ .Values.llama.image.pullPolicy }}
           args:
-            - >-
-              exec /app/llama-server
-              --models-preset /runtime/models.ini
-              --models-max {{ .Values.llama.modelsMax }}
-              --host 0.0.0.0
-              --port {{ .Values.llama.service.port }}
-              --metrics
-              --jinja
-              --api-key "$LLAMA_API_KEY"
+            - --models-preset
+            - /runtime/models.ini
+            - --models-max
+            - {{ .Values.llama.modelsMax | quote }}
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ .Values.llama.service.port | quote }}
+            - --metrics
+            - --jinja
+            - --api-key
+            - $(LLAMA_API_KEY)
           env:
             - name: LLAMA_API_KEY
               valueFrom:
@@ -60,48 +52,65 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.llama.service.port }}
-          startupProbe:
-            httpGet:
-              path: /health
-              port: http
-            periodSeconds: 10
-            failureThreshold: 90
+              protocol: TCP
           readinessProbe:
             httpGet:
               path: /health
               port: http
+            initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 120
+            initialDelaySeconds: 60
             periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 10
           resources:
-            requests:
-              cpu: {{ .Values.llama.resources.requests.cpu | quote }}
-              memory: {{ .Values.llama.resources.requests.memory | quote }}
-              {{ .Values.llama.gpu.resourceName }}: {{ .Values.llama.gpu.count | quote }}
-            limits:
-              cpu: {{ .Values.llama.resources.limits.cpu | quote }}
-              memory: {{ .Values.llama.resources.limits.memory | quote }}
-              {{ .Values.llama.gpu.resourceName }}: {{ .Values.llama.gpu.count | quote }}
+            {{- $resources := deepCopy (.Values.llama.resources | default dict) }}
+            {{- if and .Values.llama.gpuResourceName (gt (int .Values.llama.gpuCount) 0) }}
+            {{- $_ := set $resources "limits" (merge (dict .Values.llama.gpuResourceName .Values.llama.gpuCount) ($resources.limits | default dict)) }}
+            {{- end }}
+            {{- toYaml $resources | nindent 12 }}
           volumeMounts:
-            - name: models
-              mountPath: /models
-            - name: runtime
+            - name: runtime-config
               mountPath: /runtime
               readOnly: true
-            - name: shm
+            - name: model-store
+              mountPath: /models
+              readOnly: true
+            - name: dshm
               mountPath: /dev/shm
+            {{- with .Values.llama.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
-        - name: models
-          persistentVolumeClaim:
-            claimName: {{ default (printf "%s-models" (include "local-ai-hub.fullname" .)) .Values.llama.storage.existingClaim }}
-        - name: runtime
+        - name: runtime-config
           configMap:
             name: {{ include "local-ai-hub.fullname" . }}-llama
-        - name: shm
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-models" (include "local-ai-hub.fullname" .)) .Values.llama.storage.existingClaim }}
+        - name: dshm
           emptyDir:
             medium: Memory
-            sizeLimit: {{ .Values.llama.shmSize }}
+            sizeLimit: {{ .Values.llama.sharedMemorySizeLimit }}
+        {{- with .Values.llama.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.llama.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llama.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llama.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

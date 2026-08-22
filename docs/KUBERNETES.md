@@ -1,163 +1,227 @@
-# Kubernetes deployment
+# Kubernetes Deployment
 
-## Positioning
-
-Compose is the canonical single-host deployment. Kubernetes is maintained for the same components when orchestration, scheduling, storage classes, ingress, or cluster-level operations are valuable.
-
-The Helm chart does not require PostgreSQL, Helm, or kubectl on the workstation. `./hub` invokes the toolbox image and mounts the current kubeconfig directory read-only.
+The Helm chart uses the same model-neutral catalog contract as Docker Compose. `./hub catalog k8s-values` converts registered local model sources into model entries, volumes, and mounts.
 
 ## Prerequisites
 
-- Kubernetes 1.28 or newer.
-- A working default StorageClass, or `global.storageClass` configured.
-- NVIDIA device plugin or GPU Operator exposing `nvidia.com/gpu`.
-- A node able to satisfy the llama pod's CPU, RAM, storage, and GPU requests.
-- A registry-accessible gateway image, unless every target node already has the local image.
+- Kubernetes cluster
+- Helm 3
+- a working storage class or existing claims
+- GPU device plugin/runtime when local GPU inference is enabled
+- cluster access in `$HOME/.kube`
 
-## Publish the gateway image
+The `./hub` wrapper runs Helm and kubectl inside the toolbox container.
 
-Compose builds `local-ai-hub-gateway:0.2.0` locally. A remote cluster needs that image in a registry:
-
-```bash
-docker build \
-  -f deploy/docker/gateway.Dockerfile \
-  -t registry.example/local-ai-hub-gateway:0.2.0 .
-
-docker push registry.example/local-ai-hub-gateway:0.2.0
-```
-
-Then pass:
+## Render before installation
 
 ```bash
---set-string gateway.image.repository=registry.example/local-ai-hub-gateway \
---set-string gateway.image.tag=0.2.0
+./hub k8s render
 ```
 
-## Render before applying
+This:
+
+1. reads the checked-in base catalog;
+2. merges the installation overlay;
+3. validates references and storage requirements;
+4. writes `.agent-ui/k8s.generated.yaml`;
+5. renders the Helm chart.
+
+Review generated volumes, Secrets, node placement, and Ingress before installation.
+
+## Install and upgrade
 
 ```bash
-./hub k8s render \
-  --set-string gateway.image.repository=registry.example/local-ai-hub-gateway \
-  --set-string gateway.image.tag=0.2.0 \
-  > /tmp/local-ai-hub.yaml
+./hub k8s install
+./hub k8s upgrade
+./hub k8s status
 ```
 
-Review GPU resources, PVC sizes, image tags, secrets, services, and ingress.
+Defaults:
 
-## Install
+```text
+release:   agent-ui
+namespace: agent-ui
+```
+
+Override with:
 
 ```bash
-export LOCAL_AI_HUB_NAMESPACE=local-ai-hub
-export LOCAL_AI_HUB_RELEASE=local-ai-hub
-
-./hub k8s install \
-  --set-string gateway.image.repository=registry.example/local-ai-hub-gateway \
-  --set-string gateway.image.tag=0.2.0
+AGENT_UI_RELEASE=my-release \
+AGENT_UI_NAMESPACE=my-namespace \
+./hub k8s install
 ```
 
-The installer:
+## Empty installation
 
-1. Creates the namespace if necessary.
-2. Creates or updates a Kubernetes Secret from `.env`.
-3. Generates Helm model values from the same base catalog and local overlay used by Compose.
-4. Runs `helm upgrade --install`.
+The chart supports an empty `models` map. PostgreSQL, gateway, and UIs may start while the gateway reports `setup_required`. This allows a cluster operator or setup agent to install the control plane before model storage is provisioned.
 
-Secrets are not stored in Helm values files.
+## Existing PVC
 
-## Storage
-
-Default claims:
-
-| Claim | Purpose | Default |
-|---|---|---:|
-| `<release>-models` | GGUF files | 50 GiB |
-| PostgreSQL StatefulSet claim | DB data | 20 GiB |
-| `<release>-openwebui` | Open WebUI local data | 10 GiB |
-| `<release>-sillytavern` | campaign/config/plugin data | 10 GiB |
-| `<release>-hermes` | agent sessions/memory/skills | 10 GiB |
-
-Use existing claims where required:
-
-```bash
---set-string llama.storage.existingClaim=my-model-pvc
---set-string openWebUI.storage.existingClaim=my-openwebui-pvc
-```
-
-## Model import
-
-```bash
-./hub k8s model-import gpt-oss-20b /path/to/gpt-oss-20b.gguf
-./hub k8s model-import stheno-8b /path/to/Stheno.gguf
-```
-
-The importer resolves the canonical catalog filename, mounts the model PVC in a temporary pod, copies the GGUF, and restarts llama.cpp.
-
-## GPU scheduling
-
-Default request and limit:
+Catalog example:
 
 ```yaml
-nvidia.com/gpu: 1
+version: 2
+models:
+  cluster-model:
+    backend: local-llama
+    upstream_model: cluster-model
+    capabilities: [chat, code]
+    artifact:
+      kind: pvc
+      claim_name: shared-model-weights
+      sub_path: text/example.gguf
+      read_only: true
+    runtime:
+      ctx-size: 32768
 ```
 
-Override the resource name when using a partitioned or vendor-specific device plugin:
+Generated Helm values add:
 
-```bash
---set-string llama.gpu.resourceName=nvidia.com/mig-1g.10gb
+```yaml
+llama:
+  extraVolumes:
+    - name: model-cluster-model
+      persistentVolumeClaim:
+        claimName: shared-model-weights
+  extraVolumeMounts:
+    - name: model-cluster-model
+      mountPath: /models/external/cluster-model
+      readOnly: true
 ```
 
-A 10 GiB MIG slice is not sufficient for the default GPT-OSS configuration; the example only illustrates resource-name configuration.
+The claim is not owned by the Helm release and is not deleted during uninstall.
 
-Use node labels and tolerations:
+## hostPath
+
+```yaml
+artifact:
+  kind: hostPath
+  path: /srv/models
+  sub_path: example.gguf
+  read_only: true
+```
+
+HostPath is appropriate only when the operator understands node-local storage. Configure node selection or affinity so the inference pod lands on the node containing the path:
 
 ```yaml
 llama:
   nodeSelector:
-    accelerator: tesla-t4
-  tolerations:
-    - key: dedicated
-      operator: Equal
-      value: ai
-      effect: NoSchedule
+    accelerator-node: model-host
 ```
 
-## Access
+Do not let an automated discovery process enable hostPath without explicit operator approval.
 
-Services are ClusterIP by default. PostgreSQL consumes no host or node port.
+## Arbitrary CSI or network storage
 
-Port-forward Open WebUI:
+The chart exposes raw Kubernetes fields:
+
+```yaml
+llama:
+  extraVolumes: []
+  extraVolumeMounts: []
+```
+
+Example NFS/CSI/object-store volumes can be supplied through a normal values file. Point each model's `containerPath` at the corresponding mount. This is the escape hatch for organization-specific storage without forking the chart.
+
+## Managed PVC
+
+The chart creates a model PVC unless `llama.storage.existingClaim` is provided. Populate it using one of:
+
+- `./hub k8s model-import`;
+- a Kubernetes Job;
+- an init container;
+- object-store synchronization;
+- a model registry controller;
+- a storage snapshot or clone.
+
+Example:
 
 ```bash
-kubectl -n local-ai-hub port-forward svc/local-ai-hub-openwebui 18080:8080
+./hub k8s model-import MODEL_ID /path/to/example.gguf
 ```
 
-Port-forward SillyTavern:
+This is intended for models declared with managed storage. Large production transfers should normally use a registry/object-store workflow rather than `kubectl cp`.
 
-```bash
-kubectl -n local-ai-hub port-forward svc/local-ai-hub-sillytavern 18001:8000
+## Remote inference backends
+
+Models with `artifact.kind=none` do not require the llama.cpp pod. Add their backend URL and API-key environment variable to the gateway through catalog/values and `gateway.extraEnv`.
+
+For a remote-only cluster, set:
+
+```yaml
+llama:
+  enabled: false
 ```
 
-For persistent access, enable ingress with separate hostnames. SillyTavern is not assumed to work correctly under an arbitrary URL subpath, so the chart uses host-based routing.
+The gateway selects remote models by capability like any other deployment.
 
-## Hermes
+## Images and specialized services
 
-Hermes is disabled by default:
+An image service may run:
 
-```bash
-./hub k8s upgrade --set hermes.enabled=true
+- in the same namespace;
+- in another namespace;
+- on a GPU node outside the cluster;
+- behind an OpenAI-compatible internal endpoint.
+
+Register the service as a backend, declare an image-capable model, and add network policy rules if network policies are enabled.
+
+## GPU allocation
+
+Default values request:
+
+```yaml
+llama:
+  gpuResourceName: nvidia.com/gpu
+  gpuCount: 1
 ```
 
-Its dashboard requires authentication and the agent loop has hard stops for repeated failures and no-progress tool calls. Do not grant broad Kubernetes RBAC or mount the container runtime socket by default.
+Adjust the resource name for the cluster's device plugin. For CPU-only backends set `gpuCount: 0` and provide appropriate resources.
 
-## Upgrades
+## Secrets
 
-```bash
-./hub k8s upgrade \
-  --set-string gateway.image.tag=0.2.1 \
-  --set-string openWebUI.image.tag=PINNED_VERSION
+For tests the chart can create a Secret from values. Production deployments should use:
+
+```yaml
+secrets:
+  create: false
+  existingSecret: agent-ui-secrets
 ```
 
-Pin third-party image tags in production. Back up PVCs and PostgreSQL before chart or application upgrades.
+Expected keys:
+
+```text
+postgres-user
+postgres-password
+llama-api-key
+gateway-api-key
+webui-secret-key
+hermes-api-key
+```
+
+Backend-specific credentials can be injected through `gateway.extraEnv` using `secretKeyRef`. Catalogs store only the environment-variable name.
+
+## Optional components
+
+```yaml
+sillyTavern:
+  enabled: true
+
+hermes:
+  enabled: true
+
+serviceMonitor:
+  enabled: true
+
+ingress:
+  enabled: true
+```
+
+The default chart leaves story and agent workspaces disabled so installations do not expose unused surfaces.
+
+## Network policy
+
+When enabled, verify that the gateway can reach every registered remote backend and that only intended clients can reach the gateway. The default policy cannot anticipate arbitrary endpoint addresses.
 
 ## Uninstall
 
@@ -165,4 +229,15 @@ Pin third-party image tags in production. Back up PVCs and PostgreSQL before cha
 ./hub k8s uninstall
 ```
 
-Helm uninstall does not necessarily delete StatefulSet/PVC data, depending on resource ownership and cluster retention behavior. Inspect claims explicitly before deleting them.
+Confirm the retention policy for chart-owned PVCs. Existing claims, hostPath data, and remote model services remain outside the release's ownership.
+
+## Validation
+
+```bash
+helm lint deploy/helm/local-ai-hub
+./hub k8s render
+./hub k8s install
+./hub k8s status
+```
+
+After installation, test each declared capability and verify model switching, storage availability, memory isolation, and GPU allocation on the actual target cluster.

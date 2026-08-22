@@ -1,0 +1,26 @@
+version: 2
+models:
+  cluster-text-model:
+    display_name: Cluster Text Model
+    backend: local-llama
+    upstream_model: cluster-text-model
+    priority: 100
+    capabilities:
+      chat: {}
+      code: {}
+      story: {}
+    artifact:
+      kind: pvc
+      claim_name: shared-model-weights
+      sub_path: text/example-model.gguf
+      read_only: true
+    runtime:
+      ctx-size: 32768
+      n-gpu-layers: auto
+experiences:
+  chat:
+    capability: chat
+  code:
+    capability: code
+  story:
+    capability: story

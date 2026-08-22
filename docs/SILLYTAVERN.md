@@ -1,96 +1,103 @@
-# SillyTavern Story Configuration
+# Optional Story Workspace
 
-SillyTavern is the story-native interface. It should use the Local AI Hub gateway's `storyteller`
-profile so Stheno receives its own prompt, sampler defaults, memory namespaces, and one-GPU model
-coordination.
+The Compose and Helm deployments can run SillyTavern as an optional story-focused client. Agent UI does not require it, and the story capability is not tied to a particular model.
 
-## Endpoint
+## Start
 
-Configure an OpenAI-compatible backend:
-
-```text
-API URL:   <browser-reachable gateway URL>/v1
-API key:   GATEWAY_API_KEY
-Model:     storyteller
-Streaming: enabled
-```
-
-SillyTavern's browser must be able to reach the configured URL. `http://gateway:8000/v1` works for
-server-side/container communication but not from a browser on another machine. Use the gateway URL
-shown by `./hub ports`, or a reviewed Tailscale/reverse-proxy URL, and configure the corresponding
-CORS origin when direct browser-to-gateway access is required.
-
-## Division of state
-
-### SillyTavern owns
-
-- character cards and example dialogue;
-- user persona/player character;
-- World Info and lorebooks;
-- Author's Note;
-- chat transcripts and group-chat speaker logic;
-- current-scene state;
-- campaign summaries prepared for active context.
-
-### Gateway memory owns
-
-- durable campaign decisions that must survive replacing a chat;
-- stable relationships and faction status shared across interfaces;
-- ship, base, and inventory facts referenced outside SillyTavern;
-- high-level session summaries with provenance and timestamps.
-
-Do not copy an entire lorebook into gateway memory. Duplicated sources create conflicts and consume
-context without improving continuity.
-
-## Starting sampler
-
-The `storyteller` profile begins with:
-
-```text
-temperature:    1.25
-top_p:          0.95
-min_p:          0.12
-repeat_penalty: 1.08
-```
-
-SillyTavern values sent explicitly override gateway defaults. Keep named, exported presets so
-quality changes are attributable and reversible.
-
-## Campaign structure
-
-A useful World Info layout is:
-
-```text
-Global rules and tone
-Factions and politics
-Locations
-Player party
-Recurring NPCs
-Ships, vehicles, and assets
-Active threats
-Resolved history
-Current arc
-```
-
-Use keyword-triggered entity lore plus a short always-on current-arc summary. A focused 16K–32K
-active context with structured summaries usually gives the model a clearer job than indiscriminately
-sending every historical turn.
-
-## Player agency
-
-The repository storyteller prompt instructs the model not to dictate the player's choices. Add
-campaign-specific tone and rules in SillyTavern without removing that boundary. For tactical play,
-provide plausible options and what a trained character would reasonably know while leaving intent
-and final decisions to the player.
-
-## Backups
-
-SillyTavern state lives in four named Docker volumes: config, data, plugins, and third-party
-extensions. Back them up through the normal control plane:
+Compose:
 
 ```bash
-./hub backup /secure/backups/local-ai-hub
+./hub up --story
+./hub ports
 ```
 
-A restore drill should verify at least one character card, lorebook, generation preset, prior chat,
-and continuing campaign—not only that the volumes were recreated.
+Kubernetes:
+
+```yaml
+sillyTavern:
+  enabled: true
+```
+
+## Connect
+
+Configure an OpenAI-compatible endpoint:
+
+```text
+API URL: http://gateway:8000/v1
+API key: GATEWAY_API_KEY
+Model: story
+```
+
+From a browser outside the Docker network, use the gateway's loopback URL/port instead of the service name.
+
+## Why a separate story surface
+
+A generic chat UI can write fiction, but a story workspace adds domain-specific context management:
+
+- character cards;
+- personas;
+- lorebooks/world information;
+- author's notes;
+- scene state;
+- group conversations;
+- creative sampler presets;
+- long-conversation summaries.
+
+These are client responsibilities. Agent UI supplies a stable `story` experience and shared memory boundary.
+
+## Registering a story-capable model
+
+```yaml
+models:
+  my-story-model:
+    backend: local-llama
+    priority: 100
+    capabilities:
+      story: {}
+      chat: {}
+    artifact:
+      kind: host_path
+      path: /srv/models/example.gguf
+experiences:
+  story:
+    capability: story
+    defaults:
+      temperature: 1.1
+      top_p: 0.95
+```
+
+The same physical model may also serve chat or code if those capabilities are explicitly declared. Different experience defaults remain separate.
+
+## Context strategy
+
+Prefer a focused active context plus structured state:
+
+```text
+recent scene
++ character cards
++ relevant lore entries
++ campaign summary
++ current goals/relationships
+```
+
+This is usually more reliable than retaining an entire raw campaign transcript indefinitely.
+
+## Shared memory versus lorebooks
+
+Use lorebooks for authored world facts and trigger-based context. Use Agent UI memory for cross-session preferences, decisions, and concise state that should be available to multiple clients.
+
+Keep namespaces explicit, for example:
+
+```yaml
+memory:
+  enabled: true
+  namespaces: [user, story, campaign-alpha]
+```
+
+## Security
+
+Story content may contain untrusted instructions. Do not enable infrastructure, shell, email, or filesystem tools merely because the selected model supports tool calls. Keep story clients separate from privileged agent workflows unless a clear approval boundary exists.
+
+## Persistence
+
+Compose stores configuration, data, plugins, and third-party extensions in named volumes. Backups include those volumes. Model weights remain governed by their independent artifact source.
