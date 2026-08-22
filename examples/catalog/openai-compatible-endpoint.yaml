@@ -1,0 +1,37 @@
+version: 2
+backends:
+  workstation-api:
+    kind: openai-compatible
+    enabled: true
+    description: Existing inference server reachable from the Agent UI network.
+    base_url: http://host.docker.internal:9000/v1
+    api_key_env: EXTERNAL_OPENAI_API_KEY
+    coordinator: none
+    serialize_requests: false
+models:
+  workstation-model:
+    display_name: Workstation Model
+    backend: workstation-api
+    upstream_model: model-name-exposed-by-server
+    priority: 50
+    capabilities:
+      chat: {}
+      code: {}
+      embeddings: {}
+    features:
+      tools: true
+      reasoning:
+        supported: true
+        request_field: reasoning_effort
+        values: {}
+        unsupported_policy: ignore
+    artifact:
+      kind: none
+experiences:
+  chat:
+    capability: chat
+  code:
+    capability: code
+  embeddings:
+    capability: embeddings
+    advertised: false
