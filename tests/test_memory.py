@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+import local_ai_hub.memory as memory_module
 from local_ai_hub.memory import (
     MemoryRecord,
     NullMemoryStore,
@@ -48,7 +49,10 @@ def test_memory_context_is_bounded_and_marks_data_untrusted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_postgres_store_reports_missing_optional_driver() -> None:
+async def test_postgres_store_reports_missing_optional_driver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(memory_module, "asyncpg", None)
     store = PostgresMemoryStore("postgresql://unused")
     with pytest.raises(RuntimeError, match="asyncpg"):
         await store.start()
