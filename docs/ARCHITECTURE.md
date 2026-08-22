@@ -1,199 +1,180 @@
 # Architecture
 
-## Goals
+## Design goal
 
-Local AI Hub provides one coherent private AI environment without pretending that one model or
-one interface is ideal for every task. It must:
+Agent UI is a generic local AI control plane. It should remain useful when model families, runtimes, modalities, and storage layouts change.
 
-1. make GPT-OSS convenient for daily chat, technical work, knowledge, coding, and tools;
-2. preserve Stheno's creative behavior in a story-native interface;
-3. operate on one 16 GB Tesla T4 without accidental simultaneous model residency;
-4. expose stable OpenAI-compatible interfaces so components remain replaceable;
-5. maintain shared, scoped user/project/campaign memory without silently trusting retrieved text;
-6. support an agent harness without making privileged automation part of the baseline failure path;
-7. be observable, testable, recoverable, and safe to access remotely.
+The system therefore avoids model-name heuristics and separates five resource types:
 
-## Logical components
+1. **Storage/artifact source** — where weights or related files live.
+2. **Backend** — which inference API serves requests.
+3. **Model** — a registered deployment on a backend.
+4. **Experience** — a stable human-facing name selecting a capability.
+5. **Client surface** — the UI or API consumer used during live operation.
 
-### 1. llama.cpp router
-
-The inference process exposes two concrete backend aliases generated from
-`config/models/catalog.yaml` into `/runtime/models.ini`:
-
-- `gpt-oss-20b`: 65,536-token target context with conservative T4 fitting and CPU MoE offload.
-- `stheno-8b`: 32,768-token creative backend.
-
-Gateway virtual profiles—`assistant`, `assistant-fast`, `assistant-deep`, hidden `hermes-agent`,
-`storyteller`, and `auto`—select one of those two backends and apply profile-specific instructions,
-reasoning effort, samplers, and memory policy.
-
-The router is started with a maximum of one loaded model and autoload disabled. The gateway calls
-`/models/unload` and `/models/load` explicitly. This produces deterministic transitions and makes
-load time visible in gateway metrics.
-
-Router mode is an optimization, not a hard dependency. `compose.single-model.yaml` replaces it
-with ordinary single-model serving when necessary.
-
-### 2. Local AI Hub Gateway
-
-The FastAPI gateway is the stable control plane and OpenAI-compatible data plane.
-
-Responsibilities:
-
-- API-key enforcement and CORS boundaries;
-- virtual model discovery;
-- explicit and automatic intent routing;
-- prompt/profile transformation;
-- shared-memory retrieval;
-- single-GPU request leases;
-- model lifecycle coordination;
-- streaming and non-streaming proxying;
-- OpenAI-shaped failures;
-- health, status, and Prometheus metrics.
-
-The gateway does **not** execute shell commands. Tool execution belongs in Hermes or explicitly
-configured Open WebUI tools, behind their own approval and credential boundaries.
-
-### 3. PostgreSQL/pgvector
-
-Phase-one memory uses PostgreSQL full-text search because it is deterministic, auditable, and does
-not require another embedding model competing for the T4. The schema already includes a nullable
-`vector` field for later hybrid retrieval.
-
-Namespaces prevent accidental cross-domain retrieval:
-
-| Profile | Default namespaces |
-|---|---|
-| `assistant` | `user`, `infrastructure`, `projects`, `general` |
-| `storyteller` | `story`, `campaign` |
-| direct model aliases | none |
-
-Retrieved text is injected into the model instruction context under an explicit label that marks it
-as untrusted reference data, never as executable instructions.
-
-### 4. Open WebUI
-
-Open WebUI is the default daily interface. It connects to the gateway and sees the advertised
-virtual profiles. Its knowledge collections, RAG, tools, and workspace models remain available, but
-critical routing and GPU lifecycle behavior do not depend on Open WebUI-specific extensions. Its
-built-in personal-memory injection is disabled by default so gateway memory remains authoritative.
-
-When Hermes is enabled, Open WebUI should add it as a second OpenAI-compatible connection. This
-keeps ordinary chat direct and low-risk while making agent mode an explicit model choice.
-
-### 5. SillyTavern
-
-SillyTavern connects to the same gateway but normally selects `storyteller`. Character cards,
-World Info/lorebooks, Author's Notes, personas, scene state, and campaign summaries remain in the
-story client, where they are most effective.
-
-Shared gateway memory should hold durable cross-session facts and campaign state—not every line of
-transcript. SillyTavern remains the source of truth for active character and lorebook structure.
-
-### 6. Hermes Agent
-
-Hermes is an optional service profile. Its provider points to the hidden `hermes-agent`
-profile through the gateway, while Hermes exposes a separate OpenAI-compatible API back to
-Open WebUI.
-
-This arrangement preserves:
-
-- gateway GPU locking and model lifecycle control;
-- Hermes memory, skills, terminal, browser, and tool loop;
-- explicit selection of agent mode;
-- the ability to remove or replace Hermes without changing the baseline stack.
-
-## Request flows
-
-### General chat
+## Provisioning versus live use
 
 ```text
-Open WebUI
-  POST model=assistant
-        │
-        ▼
-Gateway authenticates → retrieves scoped memory → injects GPT-OSS profile
-        │
-        ▼
-Acquire GPU lease → ensure gpt-oss-20b loaded → stream llama.cpp response
+Provisioning plane                         Runtime plane
+──────────────────────────────────         ─────────────────────────────
+AI setup agent / human operator            Human UI driver
+./hub catalog plan/apply                   Open WebUI
+./hub model discover/link/register         Story workspace (optional)
+JSON Schema + YAML overlay                 Agent workspace (optional)
+Docker/Helm mount generation               OpenAI-compatible clients
+              │                                      │
+              └──────── catalog contract ────────────┘
 ```
 
-### Story request with automatic routing
+The provisioning plane may inspect host paths and generate container mounts. The runtime gateway is read-only with respect to the persistent catalog. This boundary prevents an untrusted chat prompt from mounting host directories, altering secrets, or installing a different model.
+
+## Resource graph
 
 ```text
-Client sends model=auto and "Continue our campaign scene"
-        │
-        ▼
-Rule router selects storyteller
-        │
-        ▼
-Retrieve story/campaign memory → apply creative sampler
-        │
-        ▼
-Unload GPT-OSS if needed → load Stheno → stream response
+Experience ──requires──► Capability
+     │                        ▲
+     └────selects──────── Model deployment
+                              │
+                   ┌──────────┴──────────┐
+                   ▼                     ▼
+                Backend              Artifact
+          inference transport      optional weights
 ```
 
-### Agent request
+A model may have no artifact when it is served by an endpoint. One artifact may be independently shared by multiple projects. An experience may be unpinned and select the highest-priority capable model.
+
+## Default deployment
 
 ```text
-Open WebUI selects Hermes connection
-        │
-        ▼
-Hermes performs reasoning/tool loop
-        │ model calls
-        ▼
-Gateway model=hermes-agent → llama.cpp
+Open WebUI ───────────────────────┐
+Story workspace (optional) ───────┼──► Agent UI Gateway
+Agent workspace (optional) ───────┘          │
+                                             ├── catalog/experience resolver
+                                             ├── reasoning/feature translator
+                                             ├── memory isolation
+                                             ├── backend registry
+                                             └── metrics and policy boundary
+                                                        │
+                            ┌───────────────────────────┼───────────────────────────┐
+                            ▼                           ▼                           ▼
+                     local llama.cpp         OpenAI-compatible API          image service
+                    generated mounts          local or remote               local or remote
+                            │
+                     one large model
+                     resident as policy
 ```
 
-## Concurrency model
+PostgreSQL/pgvector stores shared memory and UI data. Compose is the default deployment mechanism; Helm provides the cluster equivalent.
 
-The first deployment uses one gateway worker and a one-permit GPU semaphore. The lease covers both
-model transition and the full response stream. This prevents:
-
-- one request unloading a model used by another;
-- two backends attempting to occupy the T4 simultaneously;
-- uncontrolled queue growth inside llama.cpp;
-- model switches in the middle of SSE streaming.
-
-CPU-only work, database queries, UI activity, and Hermes orchestration can remain concurrent. If a
-second GPU is added, the coordinator can evolve to per-device leases rather than removing this
-abstraction.
-
-## Trust boundaries
+## Catalog lifecycle
 
 ```text
-Untrusted: user prompts, uploaded files, retrieved documents, web content, model output
-    │
-    ▼
-Gateway: authentication, namespace controls, bounded injection, no command execution
-    │
-    ▼
-Agent/tool boundary: explicit approvals, constrained credentials, sandbox/SSH policy
-    │
-    ▼
-Hosts, Git repositories, email, home/network systems
+base catalog
+     +
+installation overlay
+     │
+     ▼
+validation
+     │
+     ├──► resolved gateway catalog
+     ├──► llama.cpp models.ini
+     ├──► generated Compose mount override
+     ├──► optional agent configuration
+     └──► generated Helm values
 ```
 
-No model is trusted to decide its own privilege. A tool call is a proposal interpreted by a
-separate policy layer.
+All outputs derive from one contract. Storage, runtime presets, and gateway routes cannot silently disagree about a model's identity or path.
 
-## Failure strategy
+## Empty-install behavior
 
-| Failure | Degradation |
-|---|---|
-| PostgreSQL unavailable | Chat continues without shared memory unless `MEMORY_REQUIRED=true` |
-| llama router bug | Switch to fixed-model Compose override |
-| Hermes unavailable | General and story chat continue |
-| Open WebUI unavailable | Direct API and SillyTavern continue |
-| SillyTavern unavailable | Open WebUI can still select `storyteller` |
-| Model load fails/OOM | Gateway returns 503 with model-transition detail; tune preset |
-| Bad route | Select explicit model or use `/story`/`/assistant` |
+A zero-model catalog is valid. The gateway starts, reports `setup_required`, exposes its catalog and experience templates, and rejects inference with a precise unavailable-model error. This supports automated onboarding and avoids using container crash loops as setup signaling.
 
-## Evolution points
+## Request flow
 
-- Replace rule routing with a measured classifier while preserving explicit overrides.
-- Add document ingestion and hybrid lexical/vector retrieval.
-- Add approved memory proposals rather than silent transcript harvesting.
-- Add per-profile tool allowlists and policy decisions.
-- Add a second GPU or remote inference endpoint behind the same backend aliases.
-- Add Open Responses API compatibility once required by clients.
+1. Authenticate the gateway request.
+2. Resolve the requested model field as an experience or direct model ID.
+3. Select an enabled model by declared capability and priority.
+4. Confirm that the selected model declares the endpoint's modality.
+5. Resolve the backend and secret environment variable.
+6. Apply experience defaults without overwriting explicit request values.
+7. Translate reasoning effort according to the model feature declaration.
+8. Retrieve scoped memory for eligible chat experiences.
+9. For explicitly coordinated local backends, acquire the backend lease and load the selected model.
+10. Forward or stream the request.
+11. Release resources on normal completion, disconnect, cancellation, or error.
+12. Emit route and latency metrics without storing prompt content.
+
+## Backend model
+
+A backend declares:
+
+- kind;
+- URL or URL environment variable;
+- API-key environment variable;
+- endpoint path overrides;
+- model coordination mode;
+- request serialization policy;
+- backend-specific options.
+
+The gateway currently supports llama.cpp and OpenAI-compatible transports. The backend registry is intentionally independent of model capabilities so the same API can serve text, embeddings, reranking, vision, or images.
+
+## Local model coordination
+
+A single-GPU installation may set:
+
+```yaml
+coordinator: explicit
+serialize_requests: true
+```
+
+The lease covers model transition and the complete streamed response. This prevents one request from unloading a model used by another request. Remote or independently scaled backends normally disable serialization.
+
+## Reasoning translation
+
+Reasoning effort is modeled as a transport adapter:
+
+```text
+client value ──map──► upstream value ──place──► body field or template kwargs
+```
+
+The accepted values and mapping are declared per model. The gateway never infers support from a model ID.
+
+## Storage mapping
+
+### Compose
+
+Host paths and existing Docker volumes generate `.agent-ui/compose.generated.yaml`. The base Compose file remains distributable and model-neutral. The `hub` wrapper always layers the generated override when present.
+
+### Kubernetes
+
+The catalog generates model values plus `llama.extraVolumes` and `llama.extraVolumeMounts`. Existing PVCs and explicit hostPath sources are first-class; arbitrary CSI/NFS/object-store volumes can be supplied directly through Helm values.
+
+## Memory boundary
+
+Shared memory is keyed by user and namespace. Experiences define allowed namespaces. Retrieved memory is inserted under a heading that explicitly labels it as untrusted reference material. It does not become a system authority merely because it was previously stored.
+
+## Extension paths
+
+The architecture supports adding:
+
+- new capability names;
+- new endpoint mappings;
+- new backend adapters;
+- new human-facing clients;
+- new storage renderers;
+- new reasoning transports;
+- policy plugins;
+- model scoring/selection strategies.
+
+Extensions should preserve declarative registration, zero-model startup, deterministic dry runs, explicit secret references, and fail-closed capability checks.
+
+## Non-goals
+
+Agent UI does not:
+
+- redistribute model weights;
+- decide that discovered models are licensed or safe;
+- silently grant tools to a model;
+- make external storage part of its backup ownership;
+- expose host mount mutation through the chat API;
+- assume every backend implements every OpenAI route.
