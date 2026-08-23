@@ -6,10 +6,11 @@ friction.
 
 ## Environment
 
-- Date: 2026-08-22
+- Date: 2026-08-22 through 2026-08-23 UTC
 - Host: Linux with Docker Compose v2 and the NVIDIA container runtime
 - Checkout: `akovanda/Agent_UI`, branch `fix/v03-local-readiness`
 - Local inference reused during setup: Ollama at `127.0.0.1:11436`
+- Local UI validation: Open WebUI 0.11.0 at `127.0.0.1:46763`
 
 ## Issues encountered
 
@@ -159,7 +160,7 @@ friction.
 
 ### 10. Core UI/inference images are large and use floating tags
 
-- Status: Open; API installation works, UI image refresh remains network-bound
+- Status: Open; local UI is healthy through a documented fallback, official image unresolved
 - Area: `.env.example`, core Docker image lifecycle
 - Observed: Refreshing the default core images pulled `open-webui:main` and
   `llama.cpp:server-cuda`. The transfer exposed Open WebUI layers of roughly 1.69 GB and 747 MB;
@@ -168,15 +169,26 @@ friction.
   compressed layers of roughly 970 MB and 346 MB on the current build, but it omits pre-bundled
   models that this external-inference installation does not need. A concurrent test container
   also remained queued at `docker run` while the daemon extracted layers and was canceled. The
-  configured `main`/implicit `latest` tags change independently of this repository.
+  configured `main`/implicit `latest` tags change independently of this repository. The current
+  stable Open WebUI release was confirmed as `v0.11.0`, but both GHCR and Docker Hub subsequently
+  timed out during registry handshakes. The supported slim image never resolved to a local digest.
 - Impact: First startup is slow and network-sensitive, while two installations from the same
   Agent UI commit may run materially different upstream images.
-- Current workaround: Use the supported `main-slim` variant locally, pull it separately from the
-  rest of the stack, allow Docker's retained chunks/retries to complete, and record the resolved
-  digest after verification.
+- Current workaround: Pin the ignored local `.env` to `v0.11.0-slim` for a later registry retry.
+  For this validation, install the exact `open-webui[postgres]==0.11.0` wheel plus CPU-only PyTorch
+  into an isolated toolbox-derived container, attach it to the backend network, and expose it only
+  through a small local forwarder at `127.0.0.1:46763`. The UI health, root HTML, version/config,
+  PostgreSQL migrations, embedding-model initialization, and gateway model discovery all passed;
+  the UI-side gateway request advertised `local-gpt-oss` and the stable experiences.
+- Fallback limitations: This runtime is not Compose-managed and its Open WebUI exec process must be
+  relaunched after the container or Docker daemon restarts. Its upload/model cache is stored in the
+  fallback container rather than the named Open WebUI volume, and `ffmpeg` is absent, so media/audio
+  features were not validated. Chat routing and the persistent PostgreSQL-backed application state
+  are functional.
 - Suggested follow-up: Pin tested release tags or immutable digests, publish a compatibility
   matrix, and provide a resilient preflight/pull command with concise progress and retry
-  reporting.
+  reporting. A published project-owned UI image or a supported local wheel fallback would also
+  avoid coupling first startup to two multi-gigabyte third-party transfers.
 
 ### 11. The documented local lint gate is broader than the implemented command
 
@@ -238,6 +250,24 @@ friction.
 - Suggested follow-up: Add a documented local performance preflight and recommended defaults for
   reasoning-capable models, including first-token/total latency, streaming, token allowance, and
   timeout guidance.
+
+### 15. Committing a large container can starve daemon-wide health checks
+
+- Status: Open host/image-store issue; operation canceled and services recovered
+- Area: Local Docker overlay/image metadata path
+- Observed: Committing the cache-cleaned Open WebUI fallback container (about 5.2 GB of writable
+  runtime state) produced no result for more than 13 minutes. During the commit, the Docker daemon
+  repeatedly timed out health-check and exec creation across unrelated containers and logged
+  closed-FIFO and context-deadline errors. Canceling the commit restored normal inspection and the
+  PostgreSQL/gateway services returned healthy.
+- Impact: A large image snapshot can make otherwise healthy workloads look failed and prevents
+  reliable service inspection while the daemon is busy. This is broader than the slow
+  `docker system df` observation above.
+- Current workaround: Do not snapshot the large fallback while live services share this daemon;
+  run the already-installed container directly and use the loopback forwarder for UI access.
+- Suggested follow-up: Diagnose the host's overlay/containerd metadata and I/O behavior in a
+  maintenance window, reproduce with daemon metrics enabled, and use a reproducible multi-stage
+  image build or a published image instead of `docker commit` for future fallback packaging.
 
 ## Resolved during setup
 
