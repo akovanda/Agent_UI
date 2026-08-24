@@ -44,6 +44,7 @@ SECRET_KEYS = (
     "HERMES_API_KEY",
     "HERMES_DASHBOARD_PASSWORD",
 )
+OPTIONAL_SECRET_KEYS = ("SEARXNG_SECRET_KEY", "OPEN_TERMINAL_API_KEY")
 RESOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
@@ -252,7 +253,7 @@ def cmd_env_init(args: argparse.Namespace) -> int:
             used.add(port)
         else:
             values[key] = str(allocate_port(used))
-    for key in SECRET_KEYS:
+    for key in (*SECRET_KEYS, *OPTIONAL_SECRET_KEYS):
         rotate = args.rotate_secrets
         if key == "POSTGRES_PASSWORD" and output.exists():
             rotate = rotate and args.rotate_postgres_password

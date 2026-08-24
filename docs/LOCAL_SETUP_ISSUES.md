@@ -84,6 +84,8 @@ friction.
 - Area: `deploy/docker/toolbox.Dockerfile`
 - Observed: Rebuilding the toolbox re-downloaded and installed the complete Python runtime
   and development dependency set; that layer took roughly 163 seconds on the second build.
+  A later README-only edit invalidated the same layer because the Dockerfile copies README
+  beside `pyproject.toml` before dependency installation.
 - Impact: Small Dockerfile or relevant source-context changes can make local iteration much
   slower than the code change itself.
 - Current workaround: Preserve Docker's completed image/layer cache and serialize builds.
@@ -307,6 +309,24 @@ friction.
   the readiness probe exercise `/api/config` plus gateway model discovery. Add explicit alerting
   or restart diagnostics when required containers remain stopped.
 
+### 18. Public SearXNG providers can throttle or challenge this host
+
+- Status: Open; non-blocking, search returns results through other providers
+- Area: Optional SearXNG web-search profile
+- Observed: A live general search returned 25 structured results, but Brave temporarily returned
+  HTTP 429 and Startpage redirected to a CAPTCHA. SearXNG suspended those engines and continued
+  serving results from the remaining provider set. A default Wikidata startup request also
+  received HTTP 403, while the default Ahmia and Torch definitions could not load without their
+  Tor transport.
+- Impact: Result mix and latency can vary by source IP, and noisy upstream warnings can look like
+  total search failure even when the metasearch request succeeds.
+- Current workaround: Remove the Tor-only engines and blocked Wikidata initializer from the local
+  profile, retain SearXNG's multi-provider failover, and validate the returned JSON result count
+  rather than treating any single-engine warning as a failed search.
+- Suggested follow-up: Measure provider reliability over time and ship a deliberately curated
+  engine set, health summary, or optional paid-provider path for operators who need predictable
+  coverage.
+
 ## Resolved during setup
 
 ### External-only catalogs still forced the bundled llama.cpp service to start
@@ -361,3 +381,28 @@ friction.
   the gateway build context/image.
 - Resolution: Added `.agent-ui/` to both ignore files and excluded local coverage output from
   the Docker context.
+
+### Open Terminal's domain allowlist silently became deny-all without `NET_RAW`
+
+- Status: Resolved in this PR
+- Area: Optional Open Terminal container capabilities and egress firewall
+- Observed: The terminal started healthy with `NET_ADMIN`, but its nftables-compatible `iptables`
+  frontend reported that it could not open the ipset socket. The final drop rule was still
+  installed, so even allowlisted `github.com` requests timed out.
+- Impact: The UI could advertise a healthy terminal that could not perform the permitted Git
+  operations or downloads.
+- Resolution: Added only the `NET_RAW` capability required while Open Terminal creates its ipset
+  rule, then retained the upstream entrypoint's permanent `NET_ADMIN` drop. Runtime validation
+  confirmed GitHub returned HTTP 200, `example.com` could not resolve, the tool ran as user
+  `user`, and no Docker socket was present.
+
+### SearXNG loaded irrelevant failing engines during startup
+
+- Status: Resolved in this PR
+- Area: Optional SearXNG settings
+- Observed: Marking Ahmia, Torch, and Wikidata disabled was insufficient because SearXNG still
+  imported and initialized their definitions. That emitted Tor-engine load errors and an HTTP 403
+  stack trace on every startup.
+- Impact: Startup logs obscured actionable failures even though general web search worked.
+- Resolution: Used SearXNG's `use_default_settings.engines.remove` merge control to remove those
+  three definitions before engine initialization. A clean restart no longer emits those errors.

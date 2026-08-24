@@ -42,6 +42,88 @@ Open WebUI can manage its own document collections and uses PostgreSQL/pgvector 
 
 Treat retrieved text as untrusted source material. Do not place tool credentials or privileged system instructions inside documents.
 
+## Private SearXNG web search
+
+Web search is off by default. The optional `web-search` Compose profile runs a pinned SearXNG container on the separate `agent-ui-tools` network and gives it no host `ports` mapping. Open WebUI reaches it only at:
+
+```text
+http://searxng:8080/search
+```
+
+For a fresh or upgraded checkout, initialize once and then start the profile:
+
+```bash
+./hub init
+./hub up --web-search
+```
+
+Re-running `./hub init` preserves existing ports and secrets unless a rotation flag is supplied; it adds the generated `SEARXNG_SECRET_KEY` required by the new profile. `--web-search` both starts SearXNG and recreates Open WebUI with `ENABLE_WEB_SEARCH=true`. Normal `./hub up` keeps the feature disabled.
+
+The shipped settings enable SearXNG's JSON response format, which Open WebUI requires. The query URL intentionally has no `?q=<query>` suffix: Open WebUI 0.11.0 appends the query and `format=json` parameters itself. Optional defaults are controlled in `.env`:
+
+```text
+OPEN_WEBUI_ENABLE_WEB_SEARCH_CONFIRMATION=true
+OPEN_WEBUI_WEB_SEARCH_RESULT_COUNT=3
+OPEN_WEBUI_SEARXNG_LANGUAGE=all
+```
+
+In Open WebUI 0.11.0, enable **Web Search** for the selected Workspace Model when using native function calling, then turn on the per-chat Web Search control. The global provider configuration remains environment-controlled because the reference stack sets `ENABLE_PERSISTENT_CONFIG=false`.
+
+Check the private service with `./hub status` or `./hub logs searxng`. To stop it and return Open WebUI to the disabled default, recreate the default stack:
+
+```bash
+./hub down
+./hub up
+```
+
+SearXNG is private from the host and public network, but searches still send queries from SearXNG to the selected public search engines, and Open WebUI fetches result pages. Treat search terms and retrieved pages as external data flows.
+
+## Recommended tool baseline
+
+Start the complete low-risk tool bundle with:
+
+```bash
+./hub init
+./hub up --tools
+```
+
+The bundle enables or exposes:
+
+- SearXNG-backed `search_web` plus Open WebUI's `fetch_url` support;
+- browser-side Pyodide code execution and code interpretation;
+- PostgreSQL/pgvector-backed knowledge and file retrieval;
+- memories, notes, tasks, calendar, and automations; and
+- an Open Terminal scratch environment for shell, Git, file, and process operations.
+
+Native tool calling remains model-dependent. The shipped local GPT-OSS catalog model advertises
+tool support through Ollama, but Web Search, Code Interpreter, and Open Terminal still have
+per-chat controls in Open WebUI. Enable the tools you want from the **+** menu beside the prompt.
+Workspace Model defaults can make selected tools active for every new chat.
+
+### Isolated Open Terminal
+
+`--tools` includes the terminal profile; `./hub up --terminal` starts only that optional service.
+The reference service uses the pinned slim Open Terminal image and is intentionally constrained:
+
+- no host port, host-directory mount, Docker socket, sudo, package installer, or Docker CLI;
+- a dedicated persistent scratch volume mounted only at `/home/user`;
+- a separate tools network shared with Open WebUI, not the database/gateway network;
+- a server-to-server API connection with CORS limited to the Open WebUI service origin;
+- 2 CPUs, 2 GiB of memory, and 256 processes at most; and
+- outbound DNS restricted to the configured GitHub and GitLab domains (including subdomains).
+
+Open WebUI receives the terminal URL and API key server-side. The key does not need to be entered
+in the browser. `./hub init` generates `OPEN_TERMINAL_API_KEY`; the terminal connection is removed
+again when the default stack is recreated without `--terminal` or `--tools`.
+
+The terminal is suitable for scratch files, cloning and inspecting public repositories, shell
+automation, and creating downloadable artifacts. It deliberately cannot operate on the host
+checkout. Add a narrowly scoped bind mount only after reviewing the access that it would grant.
+
+The remaining productivity tools are built into Open WebUI 0.11.0 and do not install third-party
+Python plugins. Workspace Tools and Functions execute arbitrary code inside Open WebUI itself;
+review their source before importing any community extension.
+
 ## Images
 
 Open WebUI can use Agent UI's `/v1/images/generations` route when an image-capable backend is registered. It can also connect directly to an image workflow service using Open WebUI's native image settings. The latter is useful when the workflow engine exposes controls not represented by the OpenAI image request format.
