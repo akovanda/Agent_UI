@@ -146,6 +146,7 @@ class ModelSpec(BaseModel):
     upstream_model: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
     features: ModelFeatures = Field(default_factory=ModelFeatures)
+    defaults: dict[str, Any] = Field(default_factory=dict)
     artifact: ArtifactSpec = Field(default_factory=ArtifactSpec)
     runtime: dict[str, Any] = Field(default_factory=dict)
     priority: int = 0
@@ -277,6 +278,7 @@ def _legacy_model_spec(name: str, metadata: Any) -> dict[str, Any]:
         "description": details.get("description", ""),
         "capabilities": capabilities,
         "features": features,
+        "defaults": dict(details.get("defaults") or {}),
         "metadata": model_metadata,
     }
 

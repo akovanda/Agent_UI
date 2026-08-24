@@ -59,11 +59,37 @@ models:
       code: {}
     features:
       tools: true
+    defaults:
+      temperature: 0.4
     artifact:
       kind: none
 ```
 
 `upstream_model` is the value sent to the backend. The Agent UI model ID remains stable even when the backend changes its internal name.
+
+Model `defaults` are fallback request parameters. A request-body value takes precedence, and an
+experience default takes precedence when an experience selects the model. Defaults apply to chat
+and other OpenAI-compatible passthrough endpoints.
+
+Multiple directly advertised model IDs may use the same `upstream_model` while providing different
+presets. This is useful for clients whose model picker is easier to use than per-chat controls:
+
+```yaml
+models:
+  my-model-fast:
+    backend: workstation-api
+    upstream_model: model-name-reported-by-server
+    capabilities: [chat]
+    defaults: {reasoning_effort: fast}
+  my-model-deep:
+    backend: workstation-api
+    upstream_model: model-name-reported-by-server
+    capabilities: [chat]
+    defaults: {reasoning_effort: deep}
+```
+
+The model list may expose the stable `reasoning_default` preset. It does not expose the complete
+defaults object, which may contain deployment-specific values.
 
 ### Experience
 

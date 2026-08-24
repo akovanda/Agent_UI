@@ -114,6 +114,7 @@
           },
           "additionalProperties": true
         },
+        "defaults": {"type": "object"},
         "artifact": {"$ref": "#/$defs/artifact"},
         "runtime": {"type": "object"},
         "priority": {"type": "integer", "default": 0},

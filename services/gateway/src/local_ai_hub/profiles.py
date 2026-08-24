@@ -101,6 +101,11 @@ class ProfileRegistry:
                             if model.features.reasoning
                             else None
                         ),
+                        "reasoning_default": (
+                            model.defaults.get("reasoning_effort")
+                            if isinstance(model.defaults.get("reasoning_effort"), str)
+                            else None
+                        ),
                         "priority": model.priority,
                         "available": bool(backend and backend.enabled),
                     },

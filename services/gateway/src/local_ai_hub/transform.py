@@ -12,13 +12,26 @@ class InvalidChatRequest(ValueError):
     pass
 
 
+def _apply_request_defaults(payload: dict[str, Any], resolved: ResolvedProfile) -> None:
+    """Apply request fallbacks from most specific to least specific."""
+
+    if resolved.profile.reasoning_effort is not None:
+        payload.setdefault("reasoning_effort", resolved.profile.reasoning_effort)
+    for defaults in (resolved.profile.defaults, resolved.model.defaults):
+        for key, value in defaults.items():
+            payload.setdefault(key, deepcopy(value))
+
+
 def _apply_reasoning(
     payload: dict[str, Any],
     resolved: ResolvedProfile,
     reasoning_override: str | None,
 ) -> None:
+    has_requested_effort = "reasoning_effort" in payload
     requested = payload.pop("reasoning_effort", None)
-    effort = reasoning_override or requested or resolved.profile.reasoning_effort
+    effort = reasoning_override if reasoning_override is not None else requested
+    if reasoning_override is None and not has_requested_effort:
+        return
     if effort is None:
         return
     if not isinstance(effort, str) or not effort:
@@ -67,8 +80,7 @@ def prepare_chat_payload(
         raise InvalidChatRequest("messages must be an array of objects")
     messages = remove_control_prefix(messages)
 
-    for key, value in resolved.profile.defaults.items():
-        payload.setdefault(key, value)
+    _apply_request_defaults(payload, resolved)
     _apply_reasoning(payload, resolved, reasoning_override)
 
     instruction_sections: list[str] = []
@@ -123,8 +135,7 @@ def prepare_passthrough_payload(
     """Apply generic defaults/model mapping to non-chat OpenAI-compatible calls."""
 
     payload = deepcopy(raw)
-    for key, value in resolved.profile.defaults.items():
-        payload.setdefault(key, value)
+    _apply_request_defaults(payload, resolved)
     _apply_reasoning(payload, resolved, reasoning_override)
     payload["model"] = resolved.model.upstream_model or resolved.backend_model
     return payload
