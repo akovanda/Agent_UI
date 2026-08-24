@@ -103,6 +103,8 @@ run_toolbox_all() {
   docker run --rm \
     --network host \
     --env-file "$ENV_FILE" \
+    -e "RUNTIME_CONFIG_UID=$(env_value RUNTIME_CONFIG_UID 10001)" \
+    -e "RUNTIME_CONFIG_GID=$(env_value RUNTIME_CONFIG_GID 10001)" \
     ${HF_TOKEN:+-e HF_TOKEN} \
     -v "$ROOT:/workspace" \
     -v "$model_volume:/models" \

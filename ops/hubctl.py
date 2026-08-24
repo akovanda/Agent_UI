@@ -89,6 +89,30 @@ def atomic_write(path: Path, content: str, *, mode: int | None = None) -> None:
     temporary.replace(path)
 
 
+def apply_runtime_ownership(paths: list[Path]) -> None:
+    raw_uid = os.getenv("RUNTIME_CONFIG_UID")
+    raw_gid = os.getenv("RUNTIME_CONFIG_GID")
+    if raw_uid is None and raw_gid is None:
+        return
+    if not raw_uid or not raw_gid:
+        raise HubError("RUNTIME_CONFIG_UID and RUNTIME_CONFIG_GID must be set together")
+    try:
+        uid = int(raw_uid)
+        gid = int(raw_gid)
+    except ValueError as exc:
+        raise HubError("Runtime config UID and GID must be non-negative integers") from exc
+    if uid < 0 or gid < 0:
+        raise HubError("Runtime config UID and GID must be non-negative integers")
+    try:
+        for path in paths:
+            os.chown(path, uid, gid)
+    except PermissionError as exc:
+        raise HubError(
+            f"Cannot assign runtime configuration ownership to {uid}:{gid}; "
+            "run the renderer with sufficient volume permissions"
+        ) from exc
+
+
 def merge_mapping(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = dict(base)
     for key, value in overlay.items():
@@ -454,23 +478,28 @@ def cmd_runtime_render(args: argparse.Namespace) -> int:
     runtime_dir = Path(args.runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     fit_target = int(os.getenv("LLAMA_FIT_TARGET_MIB", "1024"))
+    models_ini = runtime_dir / "models.ini"
+    catalog_output = runtime_dir / "catalog.resolved.json"
+    profiles_output = runtime_dir / "profiles.json"
+    llama_key_output = runtime_dir / "llama_api_key"
     atomic_write(
-        runtime_dir / "models.ini",
+        models_ini,
         render_models_ini(catalog, models_dir, fit_target),
         mode=0o600,
     )
     resolved = resolved_catalog(catalog, models_dir)
     atomic_write(
-        runtime_dir / "catalog.resolved.json",
+        catalog_output,
         json.dumps(resolved, indent=2, sort_keys=True) + "\n",
         mode=0o600,
     )
     atomic_write(
-        runtime_dir / "profiles.json",
+        profiles_output,
         json.dumps(resolved, indent=2, sort_keys=True) + "\n",
         mode=0o600,
     )
-    atomic_write(runtime_dir / "llama_api_key", os.getenv("LLAMA_API_KEY", "") + "\n")
+    atomic_write(llama_key_output, os.getenv("LLAMA_API_KEY", "") + "\n", mode=0o600)
+    apply_runtime_ownership([models_ini, catalog_output, profiles_output, llama_key_output])
     if args.compose_output:
         atomic_write(
             Path(args.compose_output),

@@ -438,6 +438,21 @@ friction.
   application also checks the effective Compose service set before explicitly recreating llama.cpp,
   so applying an external-only catalog does not activate the otherwise inactive profile.
 
+### Root-owned runtime output was unreadable by the non-root gateway
+
+- Status: Resolved in this PR
+- Area: Runtime rendering and the shared runtime-config volume
+- Observed: Copying the expanded catalog into the named runtime volume retained mode `0600` but
+  assigned the file to root. The rebuilt gateway correctly ran as UID/GID 10001 and restarted with
+  `PermissionError` while reading `/runtime/catalog.resolved.json`. The same ownership mismatch was
+  possible when the root toolbox rendered the volume during normal catalog application.
+- Impact: A valid catalog and healthy backend could still leave the gateway in a restart loop after
+  an apply or recovery operation.
+- Resolution: Runtime rendering now assigns the four private runtime files to a configurable
+  service UID/GID (default `10001:10001`) after writing them. Compose and Hub rendering both pass
+  that ownership contract, the files remain mode `0600`, and regression coverage checks all four
+  ownership operations.
+
 ### The smoke test unconditionally required llama.cpp
 
 - Status: Resolved in this PR

@@ -31,6 +31,12 @@ def test_compose_has_optional_story_agent_and_observability_profiles() -> None:
     assert services["prometheus"]["profiles"] == ["observability"]
     assert services["gateway"]["volumes"][-1] == "runtime-config:/runtime:ro"
     assert "host.docker.internal:host-gateway" in services["gateway"]["extra_hosts"]
+    assert services["config-init"]["environment"]["RUNTIME_CONFIG_UID"] == (
+        "${RUNTIME_CONFIG_UID:-10001}"
+    )
+    assert services["config-init"]["environment"]["RUNTIME_CONFIG_GID"] == (
+        "${RUNTIME_CONFIG_GID:-10001}"
+    )
 
 
 def test_compose_has_opt_in_private_searxng_web_search() -> None:
@@ -276,6 +282,33 @@ def test_runtime_compose_override_is_host_readable(tmp_path: Path) -> None:
     assert hubctl.cmd_runtime_render(args) == 0
     assert stat.S_IMODE(compose_output.stat().st_mode) == 0o644
     assert stat.S_IMODE((runtime_dir / "catalog.resolved.json").stat().st_mode) == 0o600
+
+
+def test_runtime_render_assigns_configured_service_ownership(tmp_path: Path, monkeypatch) -> None:
+    ownership: list[tuple[str, int, int]] = []
+    monkeypatch.setenv("RUNTIME_CONFIG_UID", "10001")
+    monkeypatch.setenv("RUNTIME_CONFIG_GID", "10002")
+    monkeypatch.setattr(
+        hubctl.os,
+        "chown",
+        lambda path, uid, gid: ownership.append((Path(path).name, uid, gid)),
+    )
+    args = Namespace(
+        catalog="config/models/catalog.yaml",
+        overlay=str(tmp_path / "missing-overlay.yaml"),
+        models_dir=str(tmp_path / "models"),
+        runtime_dir=str(tmp_path / "runtime"),
+        compose_output=None,
+        hermes_dir=None,
+    )
+
+    assert hubctl.cmd_runtime_render(args) == 0
+    assert ownership == [
+        ("models.ini", 10001, 10002),
+        ("catalog.resolved.json", 10001, 10002),
+        ("profiles.json", 10001, 10002),
+        ("llama_api_key", 10001, 10002),
+    ]
 
 
 def test_host_file_generates_read_only_bind_mount() -> None:
