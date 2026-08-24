@@ -270,6 +270,14 @@ friction.
 - Suggested follow-up: Diagnose the host's overlay/containerd metadata and I/O behavior in a
   maintenance window, reproduce with daemon metrics enabled, and use a reproducible multi-stage
   image build or a published image instead of `docker commit` for future fallback packaging.
+- Recurrence on 2026-08-24: A completed 7.3 GiB GGUF upload through a temporary
+  `ollama create` client printed `success` but the attached `docker run --rm` never exited. The
+  resulting ghost container could not be stopped or killed through Docker, while unrelated
+  `docker exec`, health-check creation, and a cached toolbox build timed out. The daemon logged
+  `only one connection allowed`, closed-FIFO, and context-deadline errors. Existing inference and
+  application processes remained reachable, so the daemon was deliberately not restarted while
+  unrelated workloads were active. This shows that the fault is not limited to `docker commit`;
+  long container attach/cleanup paths can trigger the same host-wide management-plane failure.
 
 ### 16. A host-wide HTTPS listener blocks the default Tailscale Serve port
 
@@ -327,7 +335,84 @@ friction.
   engine set, health summary, or optional paid-provider path for operators who need predictable
   coverage.
 
+### 19. GGUF discovery does not validate candidate integrity or chat suitability
+
+- Status: Open product gap; invalid and non-chat candidates excluded manually
+- Area: `./hub model discover`, local model inventory
+- Observed: The recursive inventory found `mythomax-l2-13b.Q4_K_M.gguf`, but the file was only
+  about 354 MiB and a llama.cpp probe reported tensor data outside the file bounds before the
+  probe process exited abnormally. Discovery currently reports every file ending in `.gguf`
+  without parsing metadata or checking tensor boundaries. The same disk inventory also contained
+  diffusion, upscaler, and face-restoration weights that should not appear in a chat picker.
+- Impact: A plausible filename can be registered as a chat model and fail only during a slow load,
+  while unrelated weight formats require manual classification.
+- Current workaround: Probe every GGUF before registration, retain the original source file, and
+  exclude failed probes from the catalog. The corrupt Mythomax file was not imported or advertised.
+- Suggested follow-up: Add a read-only discovery probe that reports GGUF version, architecture,
+  parameter count, quantization, context, embedded template, tensor-range validity, and a clear
+  `valid`, `invalid`, or `unverified` status.
+
+### 20. Raw Ollama GGUF imports can lose the prompt template
+
+- Status: Workaround applied locally; generic import support remains open
+- Area: Ollama 0.20.0 GGUF import and generated local model manifests
+- Observed: Three valid Qwen3 GGUF files imported successfully, but `ollama show` initially listed
+  only the `completion` capability and the OpenAI chat endpoint produced malformed continuations.
+  The GGUF metadata contained a Qwen3 chat template, but the imported Ollama manifest did not.
+  Pygmalion 2 likewise required its custom `<|system|>`, `<|user|>`, and `<|model|>` role format.
+- Impact: A model can pass import and load checks yet behave as if chat is broken; tools and
+  thinking are also unavailable when the runtime manifest lacks the expected template.
+- Current workaround: Create derived chat manifests that reuse the imported weight blobs. Qwen3
+  uses the official Ollama Qwen3 template and stop parameters; Pygmalion uses the prompt format
+  documented by its model card. The corrected Qwen3 manifests advertise completion, tools, and
+  thinking, and the corrected Pygmalion manifest passed a story response test.
+- Suggested follow-up: Extend the import workflow with explicit template selection, show the
+  resulting Ollama capabilities, and require a short chat-level acceptance test before advertising
+  an imported model.
+
+### 21. The local Qwen3 GRPO checkpoint behaves unlike a general assistant
+
+- Status: Open model-quality observation; model labeled experimental
+- Area: `/home/akovanda/models/model.gguf`, local picker metadata
+- Observed: Metadata identifies the file as a 4B Qwen3 GRPO Q8 checkpoint. It loads and tokenizes
+  correctly with the official Qwen3 template, but an exact-response smoke prompt produced an
+  unsolicited Chinese roleplay/scenario continuation rather than the requested answer.
+- Impact: Runtime health alone would make this checkpoint look interchangeable with the 4B Qwen3
+  Instruct model even though its behavior is materially different.
+- Current workaround: Keep it available for comparison under an explicit `experimental` model ID,
+  do not route stable chat/code/agent experiences to it, and do not advertise tool reliability.
+- Suggested follow-up: Identify the original repository/model card from the GGUF hash, document
+  its intended reward objective and prompt format, then add an evaluation set before promoting it.
+
+### 22. Single-GPU model swaps have highly variable cold-load latency
+
+- Status: Open performance limitation; models are usable
+- Area: Ollama scheduling on the Tesla T4, client timeout guidance
+- Observed: With `keep_alive: 0`, the corrected Qwen3 0.6B model took about 27 seconds for a cold
+  load and exact response. The old GGUFv2 Pygmalion 2 13B model took about 122 seconds to load and
+  about 133 seconds end to end for a 43-token response. A Qwen3 high-thinking request also spent
+  its entire 128-token allowance on reasoning before emitting a visible answer.
+- Impact: Switching picker entries can look like a hang, and small completion limits can yield an
+  empty visible response from a healthy reasoning model.
+- Current workaround: Use streaming, allow a multi-minute first-request timeout for the 13B story
+  model, provide enough output tokens for reasoning plus the answer, and prefer the smaller models
+  while comparing behavior interactively.
+- Suggested follow-up: Surface warm/cold state and measured load latency in model metadata, add a
+  swap-aware progress indicator, and tune per-model context/KV-cache settings for this 16 GiB GPU.
+
 ## Resolved during setup
+
+### Local development extras omitted the CLI's `requests` dependency
+
+- Status: Resolved in this PR
+- Area: `pyproject.toml`, local test setup
+- Observed: Installing `.[dev]` in a clean virtual environment left the control-plane tests unable
+  to import `ops/hubctl.py` because that module imports `requests`, while the package metadata did
+  not declare it.
+- Impact: The container-based checks could pass because the toolbox image installed its own
+  dependency set, but a normal contributor environment failed during test collection.
+- Resolution: Added a bounded `requests` dependency to the development extra. A fresh local
+  environment then completed all 78 tests and Ruff checks.
 
 ### External-only catalogs still forced the bundled llama.cpp service to start
 

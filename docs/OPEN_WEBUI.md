@@ -140,6 +140,10 @@ The `story` experience is available in Open WebUI for ordinary creative chat. Us
 
 Open WebUI request parameters may include `reasoning_effort`; custom functions or clients can set `X-Reasoning-Effort`. Agent UI maps the stable value through the selected model's feature declaration.
 
+Operators can also register multiple advertised model IDs that share an `upstream_model` and set a
+different model-level `defaults.reasoning_effort` on each. Those aliases appear separately in the
+model picker, while request parameters and experience defaults still override the alias preset.
+
 ## Tools
 
 A model's `features.tools: true` declaration means the backend can represent tool calls. It does not grant access. Configure tools in Open WebUI and begin with read-only operations. Require approval for writes, shell commands, infrastructure changes, and external communications.

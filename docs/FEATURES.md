@@ -102,9 +102,14 @@ produces:
 1. `X-Reasoning-Effort` header
 2. request-body `reasoning_effort`
 3. experience default `reasoning_effort`
-4. no effort field
+4. model default `reasoning_effort`
+5. no effort field
 
 Explicit unsupported values fail before inference. A model that does not implement reasoning may set `unsupported_policy: ignore` or `reject`.
+
+A model default makes directly advertised aliases useful as reasoning presets. For example, `fast`
+and `deep` catalog IDs can map to one upstream deployment while choosing different effort values.
+The selected model's feature declaration still validates and maps the preset before forwarding it.
 
 ## Tool use
 
