@@ -253,9 +253,9 @@ friction.
   reasoning-capable models, including first-token/total latency, streaming, token allowance, and
   timeout guidance.
 
-### 15. Committing a large container can starve daemon-wide health checks
+### 15. Large container operations can starve Docker's management plane
 
-- Status: Open host/image-store issue; operation canceled and services recovered
+- Status: Open host/image-store issue; currently blocks live catalog publication
 - Area: Local Docker overlay/image metadata path
 - Observed: Committing the cache-cleaned Open WebUI fallback container (about 5.2 GB of writable
   runtime state) produced no result for more than 13 minutes. During the commit, the Docker daemon
@@ -278,6 +278,14 @@ friction.
   application processes remained reachable, so the daemon was deliberately not restarted while
   unrelated workloads were active. This shows that the fault is not limited to `docker commit`;
   long container attach/cleanup paths can trigger the same host-wide management-plane failure.
+- Current severity: The second recurrence accumulated roughly 600 tasks in uninterruptible `D`
+  state, including more than 300 `runc` processes, and raised the host load average above 700.
+  Read-only Docker metadata calls and existing HTTP inference/UI requests still worked, but new
+  exec, health-check, create, remove, and build operations did not. The imported Ollama models and
+  rendered Agent UI catalog are intact; publishing that catalog to the named runtime volume must
+  wait for a maintenance window because a Docker restart or host reboot can interrupt unrelated
+  workloads. Stop issuing container lifecycle commands once this signature appears, since every
+  attempted exec or health check can add another stuck runtime process.
 
 ### 16. A host-wide HTTPS listener blocks the default Tailscale Serve port
 
