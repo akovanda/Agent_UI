@@ -19,6 +19,9 @@ spec:
         app.kubernetes.io/component: gateway
       annotations:
         checksum/catalog: {{ include (print $.Template.BasePath "/gateway-configmap.yaml") . | sha256sum }}
+        {{- with .Values.gateway.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

@@ -7,7 +7,7 @@ metadata:
     {{- include "local-ai-hub.labels" . | nindent 4 }}
     app.kubernetes.io/component: hermes
 spec:
-  replicas: 1
+  replicas: {{ .Values.hermes.replicaCount }}
   strategy:
     type: Recreate
   selector:
@@ -21,10 +21,16 @@ spec:
         app.kubernetes.io/component: hermes
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/hermes-configmap.yaml") . | sha256sum }}
-        {{- toYaml .Values.global.podAnnotations | nindent 8 }}
+        {{- with .Values.hermes.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       securityContext:
         fsGroup: 10000
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       initContainers:
         - name: configure
           image: busybox:1.37
@@ -44,7 +50,7 @@ spec:
       containers:
         - name: hermes
           image: "{{ .Values.hermes.image.repository }}:{{ .Values.hermes.image.tag }}"
-          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          imagePullPolicy: {{ .Values.hermes.image.pullPolicy }}
           args: ["gateway", "run"]
           env:
             - name: API_SERVER_ENABLED
@@ -79,9 +85,9 @@ spec:
                   key: gateway-api-key
           ports:
             - name: api
-              containerPort: 8642
+              containerPort: {{ .Values.hermes.service.apiPort }}
             - name: dashboard
-              containerPort: 9119
+              containerPort: {{ .Values.hermes.service.dashboardPort }}
           resources:
             {{- toYaml .Values.hermes.resources | nindent 12 }}
           volumeMounts:
@@ -94,4 +100,16 @@ spec:
         - name: managed
           configMap:
             name: {{ include "local-ai-hub.fullname" . }}-hermes
+      {{- with .Values.hermes.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hermes.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hermes.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}

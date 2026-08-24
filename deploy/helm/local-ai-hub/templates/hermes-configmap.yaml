@@ -9,11 +9,11 @@ metadata:
 data:
   config.yaml: |
     model:
-      default: hermes-agent
+      default: {{ .Values.hermes.model | quote }}
       provider: custom
       base_url: http://{{ include "local-ai-hub.fullname" . }}-gateway:{{ .Values.gateway.service.port }}/v1
       api_key: ${OPENAI_API_KEY}
-      context_length: {{ (index .Values.models "gpt-oss-20b").contextSize }}
+      context_length: {{ .Values.hermes.contextLength }}
     database:
       journal_mode: wal
     tool_loop_guardrails:

@@ -7,8 +7,9 @@ metadata:
     {{- include "local-ai-hub.labels" . | nindent 4 }}
     app.kubernetes.io/component: hermes
 spec:
-  accessModes: ["ReadWriteOnce"]
-  {{- include "local-ai-hub.storageClass" . | nindent 2 }}
+  accessModes:
+    {{- toYaml .Values.hermes.storage.accessModes | nindent 4 }}
+  {{- include "local-ai-hub.storageClass" .Values.hermes.storage | nindent 2 }}
   resources:
     requests:
       storage: {{ .Values.hermes.storage.size }}

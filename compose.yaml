@@ -140,10 +140,19 @@ services:
 
   open-webui:
     <<: *service-defaults
+    networks:
+      - agent-ui-backend
+      - agent-ui-tools
     image: ${OPEN_WEBUI_IMAGE}
     depends_on:
       gateway:
         condition: service_healthy
+      searxng:
+        condition: service_healthy
+        required: false
+      open-terminal:
+        condition: service_healthy
+        required: false
     environment:
       ENABLE_OLLAMA_API: "false"
       ENABLE_OPENAI_API: "true"
@@ -155,6 +164,20 @@ services:
       ENABLE_SIGNUP: ${OPEN_WEBUI_ENABLE_SIGNUP:-true}
       ENABLE_MEMORIES: ${OPEN_WEBUI_ENABLE_MEMORIES:-false}
       ENABLE_MEMORY_SYSTEM_CONTEXT: "true"
+      ENABLE_CODE_EXECUTION: ${OPEN_WEBUI_ENABLE_CODE_EXECUTION:-true}
+      CODE_EXECUTION_ENGINE: ${OPEN_WEBUI_CODE_INTERPRETER_ENGINE:-pyodide}
+      ENABLE_CODE_INTERPRETER: ${OPEN_WEBUI_ENABLE_CODE_INTERPRETER:-true}
+      CODE_INTERPRETER_ENGINE: ${OPEN_WEBUI_CODE_INTERPRETER_ENGINE:-pyodide}
+      ENABLE_NOTES: ${OPEN_WEBUI_ENABLE_NOTES:-true}
+      ENABLE_CALENDAR: ${OPEN_WEBUI_ENABLE_CALENDAR:-true}
+      ENABLE_AUTOMATIONS: ${OPEN_WEBUI_ENABLE_AUTOMATIONS:-true}
+      ENABLE_WEB_SEARCH: ${OPEN_WEBUI_ENABLE_WEB_SEARCH:-false}
+      ENABLE_WEB_SEARCH_CONFIRMATION: ${OPEN_WEBUI_ENABLE_WEB_SEARCH_CONFIRMATION:-true}
+      WEB_SEARCH_ENGINE: searxng
+      WEB_SEARCH_RESULT_COUNT: ${OPEN_WEBUI_WEB_SEARCH_RESULT_COUNT:-3}
+      SEARXNG_QUERY_URL: http://searxng:8080/search
+      SEARXNG_LANGUAGE: ${OPEN_WEBUI_SEARXNG_LANGUAGE:-all}
+      TERMINAL_SERVER_CONNECTIONS: ${OPEN_WEBUI_TERMINAL_SERVER_CONNECTIONS:-[]}
       ENABLE_PERSISTENT_CONFIG: "false"
       VECTOR_DB: pgvector
       PGVECTOR_DB_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/open_webui
@@ -172,6 +195,65 @@ services:
       timeout: 5s
       retries: 30
       start_period: 45s
+
+  searxng:
+    <<: *service-defaults
+    networks:
+      - agent-ui-tools
+    profiles: [web-search]
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.22-9fea41204@sha256:11a9b34cdc0b1ec2b991470a2762ecb5a1a531898289fb51dcd015260450729e}
+    environment:
+      GRANIAN_HOST: 0.0.0.0
+      SEARXNG_BASE_URL: http://searxng:8080/
+      SEARXNG_SECRET: ${SEARXNG_SECRET_KEY:-}
+      SEARXNG_LIMITER: "false"
+      SEARXNG_PUBLIC_INSTANCE: "false"
+      SEARXNG_IMAGE_PROXY: "false"
+    volumes:
+      - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-data:/var/cache/searxng
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  open-terminal:
+    <<: *service-defaults
+    profiles: [terminal]
+    networks:
+      - agent-ui-tools
+    image: ${OPEN_TERMINAL_IMAGE:-ghcr.io/open-webui/open-terminal:slim@sha256:08b734e9aa1d760f5c37658d25f36e66d0c102fe817225bc4008aef45a797f7c}
+    environment:
+      OPEN_TERMINAL_API_KEY: ${OPEN_TERMINAL_API_KEY:-}
+      OPEN_TERMINAL_ALLOWED_DOMAINS: ${OPEN_TERMINAL_ALLOWED_DOMAINS:-github.com,githubusercontent.com,gitlab.com}
+      OPEN_TERMINAL_CORS_ALLOWED_ORIGINS: http://open-webui:8080
+      OPEN_TERMINAL_ENABLE_NOTEBOOKS: "false"
+      OPEN_TERMINAL_ENABLE_SYSTEM_PROMPT: "true"
+      OPEN_TERMINAL_ENABLE_TERMINAL: "true"
+      OPEN_TERMINAL_EXECUTE_TIMEOUT: "30"
+      OPEN_TERMINAL_FILE_BROWSER_ROOT: home
+      OPEN_TERMINAL_INFO: Isolated Agent UI scratch environment; no host mounts or Docker socket are available.
+    volumes:
+      - open-terminal-data:/home/user
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE, NET_ADMIN, NET_RAW, SETPCAP]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/config"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   sillytavern:
     <<: *service-defaults
@@ -270,6 +352,9 @@ networks:
   agent-ui-backend:
     driver: bridge
     internal: false
+  agent-ui-tools:
+    driver: bridge
+    internal: false
 
 volumes:
   postgres-data:
@@ -296,3 +381,7 @@ volumes:
     name: ${HERMES_VOLUME}
   prometheus-data:
     name: ${PROMETHEUS_VOLUME}
+  searxng-data:
+    name: ${SEARXNG_DATA_VOLUME:-agent-ui-searxng-data}
+  open-terminal-data:
+    name: ${OPEN_TERMINAL_DATA_VOLUME:-agent-ui-open-terminal-data}

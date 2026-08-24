@@ -8,6 +8,9 @@ metadata:
     app.kubernetes.io/component: gateway
 data:
   catalog.resolved.json: |
+{{ if .Values.catalog }}
+{{ toPrettyJson .Values.catalog | nindent 4 }}
+{{ else }}
     {
       "version": 2,
       "backends": {
@@ -20,6 +23,7 @@ data:
           "serialize_requests": true,
           "endpoints": {
             "chat": "/v1/chat/completions",
+            "responses": "/v1/responses",
             "completions": "/v1/completions",
             "infill": "/infill",
             "embeddings": "/v1/embeddings",
@@ -49,4 +53,5 @@ data:
       },
       "experiences": {{ toJson (ternary .Values.experiences .Values.hubProfiles (not (empty .Values.experiences))) }}
     }
+{{ end }}
 {{- end }}

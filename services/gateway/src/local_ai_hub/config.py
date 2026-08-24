@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,8 +32,7 @@ class Settings(BaseSettings):
     memory_top_k: int = Field(default=6, ge=0, le=30)
     memory_max_chars: int = Field(default=6000, ge=0, le=50000)
     cors_origins: str = (
-        "http://localhost:3000,http://127.0.0.1:3000,"
-        "http://localhost:8001,http://127.0.0.1:8001"
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8001,http://127.0.0.1:8001"
     )
     log_level: str = "INFO"
 
@@ -152,6 +151,13 @@ class ModelSpec(BaseModel):
     priority: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def normalize_capabilities(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return {str(item): {} for item in value}
+        return value
+
     def has_capability(self, capability: str) -> bool:
         value = self.capabilities.get(capability)
         return bool(value is not None and value is not False)
@@ -203,6 +209,17 @@ class ProfileDocument(BaseModel):
         }
         if unknown_models:
             raise ValueError(f"experiences reference unknown models: {sorted(unknown_models)}")
+        incompatible = []
+        for profile_id, profile in self.profiles.items():
+            if not profile.backend_model or not profile.capability:
+                continue
+            model = self.models.get(profile.backend_model)
+            if model is not None and not model.has_capability(profile.capability):
+                incompatible.append(
+                    f"{profile_id} requires {profile.capability} from {profile.backend_model}"
+                )
+        if incompatible:
+            raise ValueError(f"incompatible pinned experiences: {sorted(incompatible)}")
         return self
 
 
@@ -233,6 +250,37 @@ def _expand_v2(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _legacy_model_spec(name: str, metadata: Any) -> dict[str, Any]:
+    details = metadata if isinstance(metadata, dict) else {}
+    capabilities = details.get("capabilities") or {"chat": {}}
+    if isinstance(capabilities, list):
+        capabilities = {str(item): {} for item in capabilities}
+    features = dict(details.get("features") or {})
+    model_metadata = dict(details.get("metadata") or {})
+    model_metadata.setdefault("advertise_direct", False)
+    family = str(details.get("family", "")).lower()
+    if family == "gpt-oss":
+        features.setdefault(
+            "reasoning",
+            {
+                "supported": True,
+                "request_field": "reasoning_effort",
+                "transport": "body",
+                "values": {"none": None, "low": "low", "medium": "medium", "high": "high"},
+                "unsupported_policy": "reject",
+            },
+        )
+        model_metadata.setdefault("instruction_role", "developer")
+    return {
+        "backend": "local-llama",
+        "upstream_model": name,
+        "description": details.get("description", ""),
+        "capabilities": capabilities,
+        "features": features,
+        "metadata": model_metadata,
+    }
+
+
 def _expand_legacy(raw: Any) -> dict[str, Any]:
     """Keep v0.2 profile documents and generated shorthand readable."""
 
@@ -244,13 +292,7 @@ def _expand_legacy(raw: Any) -> dict[str, Any]:
             for name, value in raw.get("backends", {}).items()
         }
         models = {
-            name: {
-                "backend": "local-llama",
-                "upstream_model": name,
-                "description": value.get("description", ""),
-                "capabilities": {"chat": {}},
-            }
-            for name, value in raw.get("backends", {}).items()
+            name: _legacy_model_spec(name, value) for name, value in raw.get("backends", {}).items()
         }
         backends.setdefault(
             "local-llama",
@@ -259,6 +301,7 @@ def _expand_legacy(raw: Any) -> dict[str, Any]:
                 "base_url": "http://llama:8080",
                 "coordinator": "explicit",
                 "serialize_requests": True,
+                "options": {"legacy": True},
             },
         )
         profiles = raw.get("profiles", {})
@@ -293,17 +336,10 @@ def _expand_legacy(raw: Any) -> dict[str, Any]:
             profile["model"] = backend_model
             metadata = model_metadata.get(backend_model, {})
             capabilities = metadata.get("capabilities") if isinstance(metadata, dict) else None
-            models.setdefault(
-                backend_model,
-                {
-                    "backend": "local-llama",
-                    "upstream_model": backend_model,
-                    "description": metadata.get("description", "")
-                    if isinstance(metadata, dict)
-                    else "",
-                    "capabilities": capabilities or {"chat": {}},
-                },
-            )
+            legacy_spec = _legacy_model_spec(backend_model, metadata)
+            if capabilities:
+                legacy_spec["capabilities"] = capabilities
+            models.setdefault(backend_model, legacy_spec)
         else:
             raise RuntimeError(f"profile {profile_id} does not select a model")
 

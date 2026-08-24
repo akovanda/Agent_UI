@@ -196,7 +196,10 @@ postgres-password
 llama-api-key
 gateway-api-key
 webui-secret-key
+openwebui-database-url
 hermes-api-key
+hermes-dashboard-username
+hermes-dashboard-password
 ```
 
 Backend-specific credentials can be injected through `gateway.extraEnv` using `secretKeyRef`. Catalogs store only the environment-variable name.
@@ -218,6 +221,20 @@ ingress:
 ```
 
 The default chart leaves story and agent workspaces disabled so installations do not expose unused surfaces.
+
+Ingress paths use chart service suffixes. The default route targets `openwebui`; optional routes
+can target `sillytavern` on port `http` or `hermes` on port `dashboard`:
+
+```yaml
+ingress:
+  enabled: true
+  hosts:
+    - host: agent-ui.example.internal
+      paths:
+        - {path: /, pathType: Prefix, service: openwebui, port: http}
+        - {path: /agent, pathType: Prefix, service: hermes, port: dashboard}
+  tls: []
+```
 
 ## Network policy
 

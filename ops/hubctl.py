@@ -44,6 +44,7 @@ SECRET_KEYS = (
     "HERMES_API_KEY",
     "HERMES_DASHBOARD_PASSWORD",
 )
+OPTIONAL_SECRET_KEYS = ("SEARXNG_SECRET_KEY", "OPEN_TERMINAL_API_KEY")
 RESOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
@@ -158,6 +159,12 @@ def validate_catalog(catalog: dict[str, Any]) -> None:
             raise HubError(f"Model {model_id} docker_volume artifact requires volume")
         if kind == "pvc" and not artifact.get("claim_name"):
             raise HubError(f"Model {model_id} pvc artifact requires claim_name")
+        backend = backends[backend_id]
+        if backend.get("kind") == "llama.cpp" and kind == "none":
+            raise HubError(
+                f"Local llama.cpp model {model_id} requires a local artifact; "
+                "use an openai-compatible backend for an existing inference API"
+            )
 
     for experience_id, experience in catalog.get("experiences", {}).items():
         validate_id(str(experience_id), "experience")
@@ -168,9 +175,7 @@ def validate_catalog(catalog: dict[str, Any]) -> None:
         if pinned and pinned not in models:
             raise HubError(f"Experience {experience_id} references unknown model {pinned!r}")
         if not pinned and not capability and experience.get("route") != "auto":
-            raise HubError(
-                f"Experience {experience_id} requires model, capability, or route: auto"
-            )
+            raise HubError(f"Experience {experience_id} requires model, capability, or route: auto")
 
 
 def load_catalog(catalog: Path, overlay: Path | None) -> dict[str, Any]:
@@ -248,7 +253,7 @@ def cmd_env_init(args: argparse.Namespace) -> int:
             used.add(port)
         else:
             values[key] = str(allocate_port(used))
-    for key in SECRET_KEYS:
+    for key in (*SECRET_KEYS, *OPTIONAL_SECRET_KEYS):
         rotate = args.rotate_secrets
         if key == "POSTGRES_PASSWORD" and output.exists():
             rotate = rotate and args.rotate_postgres_password
@@ -343,12 +348,14 @@ def render_models_ini(catalog: dict[str, Any], models_dir: Path, fit_target: int
 def render_compose_override(catalog: dict[str, Any]) -> dict[str, Any]:
     mounts: list[dict[str, Any]] = []
     external_volumes: dict[str, Any] = {}
+    local_llama_required = False
     for model_id, model in catalog.get("models", {}).items():
         if not model.get("enabled", True):
             continue
         backend = catalog["backends"][model["backend"]]
-        if backend.get("kind") != "llama.cpp":
+        if not backend.get("enabled", True) or backend.get("kind") != "llama.cpp":
             continue
+        local_llama_required = True
         artifact = artifact_for(model)
         kind = artifact.get("kind", "none")
         target_dir = f"/models/external/{model_id}"
@@ -379,6 +386,16 @@ def render_compose_override(catalog: dict[str, Any]) -> dict[str, Any]:
                 }
             )
     result: dict[str, Any] = {"services": {"llama": {}}}
+    if not local_llama_required:
+        result["services"]["llama"]["profiles"] = ["local-llama"]
+        result["services"]["gateway"] = {
+            "depends_on": {
+                "llama": {
+                    "condition": "service_started",
+                    "required": False,
+                }
+            }
+        }
     if mounts:
         result["services"]["llama"]["volumes"] = mounts
     if external_volumes:
@@ -432,9 +449,7 @@ def resolved_catalog(catalog: dict[str, Any], models_dir: Path) -> dict[str, Any
 
 
 def cmd_runtime_render(args: argparse.Namespace) -> int:
-    catalog = load_catalog(
-        Path(args.catalog), Path(args.overlay) if args.overlay else None
-    )
+    catalog = load_catalog(Path(args.catalog), Path(args.overlay) if args.overlay else None)
     models_dir = Path(args.models_dir)
     runtime_dir = Path(args.runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -460,7 +475,7 @@ def cmd_runtime_render(args: argparse.Namespace) -> int:
         atomic_write(
             Path(args.compose_output),
             yaml.safe_dump(render_compose_override(catalog), sort_keys=False),
-            mode=0o600,
+            mode=0o644,
         )
     if args.hermes_dir:
         render_hermes(catalog, Path(args.hermes_dir))
@@ -777,8 +792,10 @@ def cmd_catalog_show(args: argparse.Namespace) -> int:
 
 
 def cmd_catalog_validate(args: argparse.Namespace) -> int:
-    candidate = read_yaml(Path(args.file)) if args.file else load_catalog(
-        Path(args.catalog), Path(args.overlay) if args.overlay else None
+    candidate = (
+        read_yaml(Path(args.file))
+        if args.file
+        else load_catalog(Path(args.catalog), Path(args.overlay) if args.overlay else None)
     )
     if args.file:
         if candidate.get("version") != 2:
@@ -788,9 +805,9 @@ def cmd_catalog_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_catalog_k8s_values(args: argparse.Namespace) -> int:
-    catalog = load_catalog(Path(args.catalog), Path(args.overlay) if args.overlay else None)
+def catalog_to_k8s_values(catalog: dict[str, Any]) -> dict[str, Any]:
     values: dict[str, Any] = {
+        "catalog": catalog,
         "models": {},
         "experiences": catalog.get("experiences", {}),
         "hubProfiles": catalog.get("experiences", {}),
@@ -804,8 +821,13 @@ def cmd_catalog_k8s_values(args: argparse.Namespace) -> int:
         path = resolved_model_path(model_id, model, Path("/models"))
         values["models"][model_id] = {
             "enabled": bool(model.get("enabled", True)),
-            "containerPath": str(path) if path else "",
+            "displayName": model.get("display_name") or model_id,
+            "backend": model.get("backend", "local-llama"),
             "upstreamModel": model.get("upstream_model") or model_id,
+            "priority": int(model.get("priority", 0)),
+            "capabilities": normalize_capabilities(model),
+            "features": model.get("features") or {},
+            "containerPath": str(path) if path else "",
             "contextSize": runtime.get("ctx-size", 8192),
             "gpuLayers": runtime.get("n-gpu-layers", "auto"),
             "cpuMoeLayers": runtime.get("n-cpu-moe", 0),
@@ -818,19 +840,30 @@ def cmd_catalog_k8s_values(args: argparse.Namespace) -> int:
         mount_path = f"/models/external/{model_id}"
         if kind == "pvc":
             values["llama"]["extraVolumes"].append(
-                {"name": volume_name, "persistentVolumeClaim": {"claimName": artifact["claim_name"]}}
+                {
+                    "name": volume_name,
+                    "persistentVolumeClaim": {"claimName": artifact["claim_name"]},
+                }
             )
             values["llama"]["extraVolumeMounts"].append(
                 {"name": volume_name, "mountPath": mount_path, "readOnly": True}
             )
         elif kind == "hostPath":
             values["llama"]["extraVolumes"].append(
-                {"name": volume_name, "hostPath": {"path": artifact["path"], "type": "DirectoryOrCreate"}}
+                {
+                    "name": volume_name,
+                    "hostPath": {"path": artifact["path"], "type": "Directory"},
+                }
             )
             values["llama"]["extraVolumeMounts"].append(
                 {"name": volume_name, "mountPath": mount_path, "readOnly": True}
             )
-    output = yaml.safe_dump(values, sort_keys=False)
+    return values
+
+
+def cmd_catalog_k8s_values(args: argparse.Namespace) -> int:
+    catalog = load_catalog(Path(args.catalog), Path(args.overlay) if args.overlay else None)
+    output = yaml.safe_dump(catalog_to_k8s_values(catalog), sort_keys=False)
     if args.output:
         atomic_write(Path(args.output), output, mode=0o600)
     else:
@@ -949,7 +982,15 @@ def build_parser() -> argparse.ArgumentParser:
     model_register.add_argument("--priority", type=int, default=0)
     model_register.add_argument(
         "--source-kind",
-        choices=["managed", "host_path", "docker_volume", "container_path", "pvc", "hostPath", "none"],
+        choices=[
+            "managed",
+            "host_path",
+            "docker_volume",
+            "container_path",
+            "pvc",
+            "hostPath",
+            "none",
+        ],
         default="none",
     )
     model_register.add_argument("--path")

@@ -7,8 +7,9 @@ metadata:
     {{- include "local-ai-hub.labels" . | nindent 4 }}
     app.kubernetes.io/component: openwebui
 spec:
-  accessModes: ["ReadWriteOnce"]
-  {{- include "local-ai-hub.storageClass" . | nindent 2 }}
+  accessModes:
+    {{- toYaml .Values.openWebUI.storage.accessModes | nindent 4 }}
+  {{- include "local-ai-hub.storageClass" .Values.openWebUI.storage | nindent 2 }}
   resources:
     requests:
       storage: {{ .Values.openWebUI.storage.size }}

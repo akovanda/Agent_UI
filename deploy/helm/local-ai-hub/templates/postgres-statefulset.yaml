@@ -1,4 +1,4 @@
-{{- if .Values.postgresql.enabled }}
+{{- if .Values.postgres.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -18,15 +18,21 @@ spec:
       labels:
         {{- include "local-ai-hub.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: postgres
+      {{- with .Values.postgres.podAnnotations }}
       annotations:
-        {{- toYaml .Values.global.podAnnotations | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       securityContext:
         fsGroup: 999
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: postgres
-          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
-          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
           ports:
             - name: postgres
               containerPort: 5432
@@ -56,7 +62,7 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 10
           resources:
-            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
@@ -67,12 +73,12 @@ spec:
         - name: init
           configMap:
             name: {{ include "local-ai-hub.fullname" . }}-postgres-init
-        {{- if .Values.postgresql.storage.existingClaim }}
+        {{- if .Values.postgres.storage.existingClaim }}
         - name: data
           persistentVolumeClaim:
-            claimName: {{ .Values.postgresql.storage.existingClaim }}
+            claimName: {{ .Values.postgres.storage.existingClaim }}
         {{- end }}
-  {{- if not .Values.postgresql.storage.existingClaim }}
+  {{- if not .Values.postgres.storage.existingClaim }}
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -80,10 +86,11 @@ spec:
           {{- include "local-ai-hub.labels" . | nindent 10 }}
           app.kubernetes.io/component: postgres
       spec:
-        accessModes: ["ReadWriteOnce"]
-        {{- include "local-ai-hub.storageClass" . | nindent 8 }}
+        accessModes:
+          {{- toYaml .Values.postgres.storage.accessModes | nindent 10 }}
+        {{- include "local-ai-hub.storageClass" .Values.postgres.storage | nindent 8 }}
         resources:
           requests:
-            storage: {{ .Values.postgresql.storage.size }}
+            storage: {{ .Values.postgres.storage.size }}
   {{- end }}
 {{- end }}

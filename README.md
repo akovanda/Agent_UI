@@ -17,7 +17,7 @@ It does not prescribe a particular model family. Operators register resources de
 - Generated Compose mount overrides and generated Helm values from the same catalog.
 - An AI-friendly CLI and JSON/YAML APIs for setup and inspection.
 - Shared PostgreSQL/pgvector memory with explicit user and namespace isolation.
-- Optional story, agent, and observability services.
+- Optional story, agent, private web-search, and observability services.
 
 ## Architecture
 
@@ -104,8 +104,15 @@ Optional surfaces:
 ```bash
 ./hub up --story
 ./hub up --agent
-./hub up --story --agent --observability
+./hub up --web-search
+./hub up --terminal
+./hub up --tools
+./hub up --story --agent --tools --observability
 ```
+
+`--tools` enables the recommended Open WebUI tool baseline: private web search and URL fetching,
+the isolated Open Terminal scratch environment, browser-based code interpretation, memories,
+notes, tasks, calendar, and the existing PostgreSQL/pgvector knowledge retrieval.
 
 ## AI-first setup
 

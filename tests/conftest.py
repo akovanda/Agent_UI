@@ -69,7 +69,7 @@ class FakeMemoryStore:
 def make_settings(**overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "gateway_api_key": "test-secret-key",
-        "profile_config_path": Path("config/gateway/profiles.yaml"),
+        "profile_config_path": Path("tests/fixtures/legacy-profiles.yaml"),
         "model_coordinator_mode": "none",
         "memory_enabled": True,
         "database_url": None,

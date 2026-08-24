@@ -1,0 +1,20 @@
+use_default_settings:
+  engines:
+    remove:
+      # Tor-only engines cannot load without a Tor transport. Wikidata's
+      # startup query is routinely rejected on shared/cloud egress.
+      - ahmia
+      - torch
+      - wikidata
+
+search:
+  # Open WebUI consumes SearXNG's structured response. HTML remains available
+  # only to containers on the private Compose network for local diagnostics.
+  formats:
+    - html
+    - json
+
+server:
+  limiter: false
+  public_instance: false
+  image_proxy: false

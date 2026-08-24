@@ -92,6 +92,26 @@ Optional metrics:
 ./hub up --observability
 ```
 
+Optional private SearXNG web search for Open WebUI:
+
+```bash
+./hub up --web-search
+```
+
+SearXNG is reachable only inside the Compose tools network; no SearXNG port is published on the host. See [OPEN_WEBUI.md](OPEN_WEBUI.md#private-searxng-web-search) for first-run, UI, and privacy details.
+
+Optional isolated Open Terminal only, or the complete recommended tool bundle:
+
+```bash
+./hub up --terminal
+./hub up --tools
+```
+
+`--tools` combines private web search, the terminal scratch environment, memories, the browser
+code interpreter, and Open WebUI's built-in knowledge/productivity tools. Neither SearXNG nor
+Open Terminal publishes a host port. See [OPEN_WEBUI.md](OPEN_WEBUI.md#recommended-tool-baseline)
+for capabilities and security boundaries.
+
 Options can be combined.
 
 ## External endpoints on the Docker host

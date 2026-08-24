@@ -71,9 +71,7 @@ experiences:
         assert listed[0]["metadata"]["available"] is False
 
 
-def test_chat_capability_selects_priority_and_maps_reasoning(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_chat_capability_selects_priority_and_maps_reasoning(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TEST_BACKEND_KEY", "backend-key")
     path = tmp_path / "catalog.yaml"
     write_catalog(

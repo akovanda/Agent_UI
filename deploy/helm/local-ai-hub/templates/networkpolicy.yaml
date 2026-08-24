@@ -13,15 +13,21 @@ spec:
   ingress:
     - from:
         - podSelector: {}
+    {{- if or .Values.openWebUI.enabled .Values.sillyTavern.enabled .Values.hermes.enabled }}
     - ports:
+        {{- if .Values.openWebUI.enabled }}
         - protocol: TCP
-          port: {{ .Values.openWebUI.service.port }}
+          port: {{ .Values.openWebUI.service.targetPort }}
+        {{- end }}
+        {{- if .Values.sillyTavern.enabled }}
         - protocol: TCP
-          port: {{ .Values.sillyTavern.service.port }}
+          port: {{ .Values.sillyTavern.service.targetPort }}
+        {{- end }}
         {{- if .Values.hermes.enabled }}
         - protocol: TCP
           port: {{ .Values.hermes.service.dashboardPort }}
         {{- end }}
+    {{- end }}
   egress:
     - to:
         - podSelector: {}

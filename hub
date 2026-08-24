@@ -37,9 +37,17 @@ toolbox_image() {
   env_value TOOLBOX_IMAGE "$DEFAULT_TOOLBOX_IMAGE"
 }
 
+prepare_shipped_bind_mounts() {
+  chmod -R a+rX \
+    "$ROOT/config/postgres-init" \
+    "$ROOT/config/prometheus" \
+    "$ROOT/config/searxng"
+}
+
 compose() {
   require_docker
   [[ -f "$ENV_FILE" ]] || fail "Run ./hub init first"
+  prepare_shipped_bind_mounts
   local args=(
     --project-directory "$ROOT"
     --env-file "$ENV_FILE"
@@ -65,6 +73,7 @@ create_volumes() {
     GATEWAY_STATE_VOLUME OPEN_WEBUI_VOLUME SILLYTAVERN_CONFIG_VOLUME
     SILLYTAVERN_DATA_VOLUME SILLYTAVERN_PLUGINS_VOLUME
     SILLYTAVERN_EXTENSIONS_VOLUME HERMES_VOLUME PROMETHEUS_VOLUME
+    SEARXNG_DATA_VOLUME OPEN_TERMINAL_DATA_VOLUME
   )
   local key name
   for key in "${names[@]}"; do
@@ -504,7 +513,7 @@ Usage: ./hub COMMAND [arguments]
 
 Core:
   init [--reallocate-ports] [--rotate-secrets]
-  up [--story] [--agent] [--observability]
+  up [--story] [--agent] [--observability] [--web-search] [--terminal] [--tools]
   down | restart | status | logs [service] | ports
   doctor [--gpu] | smoke | test | lint
   backup [DIR] [--include-models] | restore DIR --yes
@@ -552,18 +561,51 @@ main() {
     up)
       ensure_initialized
       local profiles=()
+      local web_search=false
+      local terminal=false
+      local tool_bundle=false
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --story) profiles+=(--profile story) ;;
           --agent) profiles+=(--profile agent) ;;
           --observability) profiles+=(--profile observability) ;;
+          --web-search) web_search=true ;;
+          --terminal) terminal=true ;;
+          --tools) web_search=true; terminal=true; tool_bundle=true ;;
           *) fail "Unknown up option: $1" ;;
         esac
         shift
       done
+      [[ "$web_search" == true ]] && profiles+=(--profile web-search)
+      [[ "$terminal" == true ]] && profiles+=(--profile terminal)
+      if [[ "$web_search" == true ]]; then
+        local searxng_secret
+        searxng_secret="$(env_value SEARXNG_SECRET_KEY)"
+        [[ ${#searxng_secret} -ge 16 ]] || \
+          fail "SEARXNG_SECRET_KEY is missing or too short; run ./hub init, then retry"
+      fi
+      local terminal_connections
+      terminal_connections="$(env_value OPEN_WEBUI_TERMINAL_SERVER_CONNECTIONS '[]')"
+      if [[ "$terminal" == true ]]; then
+        local terminal_key
+        terminal_key="$(env_value OPEN_TERMINAL_API_KEY)"
+        [[ ${#terminal_key} -ge 16 ]] || \
+          fail "OPEN_TERMINAL_API_KEY is missing or too short; run ./hub init, then retry"
+        printf -v terminal_connections \
+          '[{"id":"agent-ui-terminal","name":"Agent UI Sandbox","enabled":true,"url":"http://open-terminal:8000","key":"%s","auth_type":"bearer"}]' \
+          "$terminal_key"
+      fi
+      local web_search_setting memories_setting
+      web_search_setting="$(env_value OPEN_WEBUI_ENABLE_WEB_SEARCH false)"
+      memories_setting="$(env_value OPEN_WEBUI_ENABLE_MEMORIES false)"
+      [[ "$web_search" == true ]] && web_search_setting=true
+      [[ "$tool_bundle" == true ]] && memories_setting=true
       build_toolbox
       render_runtime
-      compose "${profiles[@]}" up -d --build
+      OPEN_WEBUI_ENABLE_WEB_SEARCH="$web_search_setting" \
+        OPEN_WEBUI_ENABLE_MEMORIES="$memories_setting" \
+        OPEN_WEBUI_TERMINAL_SERVER_CONNECTIONS="$terminal_connections" \
+        compose "${profiles[@]}" up -d --build
       show_ports
       ;;
     down) compose down "$@" ;;
@@ -612,10 +654,17 @@ main() {
       [[ "${1:-}" == "--yes" ]] || fail "destroy requires --yes"
       ensure_initialized
       compose down --remove-orphans || true
-      local keys=(POSTGRES_VOLUME MODELS_VOLUME RUNTIME_CONFIG_VOLUME HUB_STATE_VOLUME GATEWAY_STATE_VOLUME OPEN_WEBUI_VOLUME SILLYTAVERN_CONFIG_VOLUME SILLYTAVERN_DATA_VOLUME SILLYTAVERN_PLUGINS_VOLUME SILLYTAVERN_EXTENSIONS_VOLUME HERMES_VOLUME PROMETHEUS_VOLUME)
+      local keys=(POSTGRES_VOLUME MODELS_VOLUME RUNTIME_CONFIG_VOLUME HUB_STATE_VOLUME GATEWAY_STATE_VOLUME OPEN_WEBUI_VOLUME SILLYTAVERN_CONFIG_VOLUME SILLYTAVERN_DATA_VOLUME SILLYTAVERN_PLUGINS_VOLUME SILLYTAVERN_EXTENSIONS_VOLUME HERMES_VOLUME PROMETHEUS_VOLUME SEARXNG_DATA_VOLUME OPEN_TERMINAL_DATA_VOLUME)
       local key name
       for key in "${keys[@]}"; do
-        name="$(env_value "$key")"; [[ -n "$name" ]] && docker volume rm -f "$name" >/dev/null || true
+        if [[ "$key" == SEARXNG_DATA_VOLUME ]]; then
+          name="$(env_value "$key" agent-ui-searxng-data)"
+        elif [[ "$key" == OPEN_TERMINAL_DATA_VOLUME ]]; then
+          name="$(env_value "$key" agent-ui-open-terminal-data)"
+        else
+          name="$(env_value "$key")"
+        fi
+        [[ -n "$name" ]] && docker volume rm -f "$name" >/dev/null || true
       done
       rm -rf "$GENERATED_DIR"
       printf 'Removed Agent UI containers, generated files, and managed volumes.\n'

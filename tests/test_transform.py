@@ -9,9 +9,11 @@ from local_ai_hub.memory import MemoryRecord
 from local_ai_hub.profiles import ProfileRegistry
 from local_ai_hub.transform import InvalidChatRequest, prepare_chat_payload
 
+LEGACY_PROFILES = Path("tests/fixtures/legacy-profiles.yaml")
+
 
 def test_general_payload_uses_native_reasoning_and_one_developer_message() -> None:
-    registry = ProfileRegistry(load_profiles(Path("config/gateway/profiles.yaml")))
+    registry = ProfileRegistry(load_profiles(LEGACY_PROFILES))
     resolved = registry.resolve(
         "assistant", [{"role": "user", "content": "Check the barn network."}]
     )
@@ -36,7 +38,7 @@ def test_general_payload_uses_native_reasoning_and_one_developer_message() -> No
     assert payload["model"] == "gpt-oss-20b"
     assert payload["reasoning_effort"] == "medium"
     assert payload["messages"][0]["role"] == "developer"
-    assert "Local profile instructions" in payload["messages"][0]["content"]
+    assert "Experience instructions" in payload["messages"][0]["content"]
     assert "untrusted reference data" in payload["messages"][0]["content"]
     assert "Tesla T4" in payload["messages"][0]["content"]
     assert sum(message["role"] == "developer" for message in payload["messages"]) == 1
@@ -44,7 +46,7 @@ def test_general_payload_uses_native_reasoning_and_one_developer_message() -> No
 
 
 def test_client_instruction_messages_are_consolidated_for_gpt_oss() -> None:
-    registry = ProfileRegistry(load_profiles(Path("config/gateway/profiles.yaml")))
+    registry = ProfileRegistry(load_profiles(LEGACY_PROFILES))
     messages = [
         {"role": "system", "content": "Use metric units."},
         {
@@ -68,7 +70,7 @@ def test_client_instruction_messages_are_consolidated_for_gpt_oss() -> None:
 
 
 def test_story_payload_uses_creative_sampler_without_reasoning_field() -> None:
-    registry = ProfileRegistry(load_profiles(Path("config/gateway/profiles.yaml")))
+    registry = ProfileRegistry(load_profiles(LEGACY_PROFILES))
     resolved = registry.resolve(
         "storyteller", [{"role": "user", "content": "/story Open on the hangar deck."}]
     )
@@ -94,7 +96,7 @@ def test_story_payload_uses_creative_sampler_without_reasoning_field() -> None:
 
 
 def test_instruction_message_without_text_is_rejected() -> None:
-    registry = ProfileRegistry(load_profiles(Path("config/gateway/profiles.yaml")))
+    registry = ProfileRegistry(load_profiles(LEGACY_PROFILES))
     messages = [
         {"role": "system", "content": [{"type": "image_url", "image_url": {"url": "x"}}]},
         {"role": "user", "content": "Hi"},

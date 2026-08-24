@@ -26,9 +26,7 @@ def make_transport(captured: list[dict]) -> httpx.MockTransport:
                 json={
                     "id": "chatcmpl-local",
                     "object": "chat.completion",
-                    "choices": [
-                        {"index": 0, "message": {"role": "assistant", "content": "ok"}}
-                    ],
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
                     "model": body["model"],
                 },
             )
@@ -89,7 +87,7 @@ def test_memory_is_injected_as_untrusted_context() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/v1/chat/completions",
-            headers=AUTH,
+            headers={**AUTH, "X-Agent-UI-User": "andrew"},
             json={
                 "model": "assistant",
                 "messages": [{"role": "user", "content": "What GPU is in the host?"}],
@@ -169,7 +167,7 @@ def test_public_health_metrics_preview_reload_and_status() -> None:
         status = client.get("/api/models/status", headers=AUTH)
     assert preview.json()["backend_model"] == "stheno-8b"
     assert reloaded.json()["status"] == "reloaded"
-    assert status.json()["models"][0]["status"] == "unloaded"
+    assert status.json()["backends"]["local-llama"]["healthy"] is True
 
 
 def test_bad_chat_requests_are_rejected() -> None:
@@ -265,7 +263,7 @@ def test_streaming_response_is_proxied() -> None:
     class EventStream(httpx.AsyncByteStream):
         async def __aiter__(self):
             yield b'data: {"choices":[]}\n\n'
-            yield b'data: [DONE]\n\n'
+            yield b"data: [DONE]\n\n"
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/chat/completions":
@@ -279,8 +277,9 @@ def test_streaming_response_is_proxied() -> None:
     app = create_app(
         make_settings(), transport=httpx.MockTransport(handler), memory_store=FakeMemoryStore()
     )
-    with TestClient(app) as client:
-        with client.stream(
+    with (
+        TestClient(app) as client,
+        client.stream(
             "POST",
             "/v1/chat/completions",
             headers=AUTH,
@@ -289,8 +288,9 @@ def test_streaming_response_is_proxied() -> None:
                 "stream": True,
                 "messages": [{"role": "user", "content": "Hi"}],
             },
-        ) as response:
-            body = b"".join(response.iter_bytes())
+        ) as response,
+    ):
+        body = b"".join(response.iter_bytes())
     assert response.status_code == 200
     assert b"[DONE]" in body
     assert response.headers["X-Local-AI-Backend-Model"] == "gpt-oss-20b"
@@ -343,8 +343,10 @@ def test_unexpected_upstream_failure_releases_gpu_lease() -> None:
             headers=AUTH,
             json={"model": "assistant", "messages": [{"role": "user", "content": "Hi"}]},
         )
-        assert failed.status_code == 500
-        assert app.state.runtime.gpu_gate._semaphore._value == 1
+        assert failed.status_code == 502
+        backend = app.state.runtime.backends.get("local-llama")
+        assert backend.gate is not None
+        assert backend.gate._semaphore._value == 1
 
         recovered = client.post(
             "/v1/chat/completions",
@@ -356,23 +358,21 @@ def test_unexpected_upstream_failure_releases_gpu_lease() -> None:
     assert recovered.json()["choices"][0]["message"]["content"] == "recovered"
 
 
-def test_response_close_failure_still_releases_gpu_lease() -> None:
+def test_response_close_failure_still_releases_gpu_lease(monkeypatch) -> None:
     class FakeResponse:
         is_error = False
         status_code = 200
-        headers = {"content-type": "application/json"}
 
         def __init__(self, fail_close: bool):
             self.fail_close = fail_close
+            self.headers = {"content-type": "application/json"}
 
         async def aread(self) -> bytes:
             return json.dumps(
                 {
                     "id": "chatcmpl-close-test",
                     "object": "chat.completion",
-                    "choices": [
-                        {"index": 0, "message": {"role": "assistant", "content": "ok"}}
-                    ],
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
                 }
             ).encode()
 
@@ -384,19 +384,22 @@ def test_response_close_failure_still_releases_gpu_lease() -> None:
     with TestClient(app, raise_server_exceptions=False) as client:
         calls = 0
 
-        async def fake_chat(_payload):
+        async def fake_request(_self, _operation, _payload, *, stream):
             nonlocal calls
             calls += 1
+            assert stream is False
             return FakeResponse(fail_close=calls == 1)
 
-        app.state.runtime.upstream.chat = fake_chat
+        backend = app.state.runtime.backends.get("local-llama")
+        monkeypatch.setattr(type(backend), "request", fake_request)
         failed = client.post(
             "/v1/chat/completions",
             headers=AUTH,
             json={"model": "assistant", "messages": [{"role": "user", "content": "Hi"}]},
         )
         assert failed.status_code == 500
-        assert app.state.runtime.gpu_gate._semaphore._value == 1
+        assert backend.gate is not None
+        assert backend.gate._semaphore._value == 1
 
         recovered = client.post(
             "/v1/chat/completions",
@@ -425,10 +428,10 @@ def test_optional_memory_failure_is_degraded_but_ready() -> None:
         response = client.get("/health/ready")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "degraded",
-        "checks": {"memory": False, "llama": True},
-    }
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["checks"]["memory"] is False
+    assert body["checks"]["backends"]["local-llama"]["healthy"] is True
 
 
 def test_required_memory_failure_marks_gateway_unready() -> None:
@@ -485,9 +488,7 @@ def test_llama_api_key_is_forwarded_to_router_requests() -> None:
                 json={
                     "id": "chatcmpl-auth",
                     "object": "chat.completion",
-                    "choices": [
-                        {"index": 0, "message": {"role": "assistant", "content": "ok"}}
-                    ],
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
                     "model": body["model"],
                 },
             )

@@ -29,11 +29,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{- define "local-ai-hub.secretName" -}}
-{{- required "global.existingSecret is required" .Values.global.existingSecret }}
+{{- if .Values.secrets.existingSecret -}}
+{{- .Values.secrets.existingSecret -}}
+{{- else if .Values.secrets.create -}}
+{{- printf "%s-secrets" (include "local-ai-hub.fullname" .) -}}
+{{- else -}}
+{{- required "secrets.existingSecret is required when secrets.create is false" .Values.secrets.existingSecret -}}
+{{- end -}}
 {{- end }}
 
 {{- define "local-ai-hub.storageClass" -}}
-{{- if .Values.global.storageClass }}
-storageClassName: {{ .Values.global.storageClass | quote }}
+{{- if .storageClass }}
+storageClassName: {{ .storageClass | quote }}
 {{- end }}
 {{- end }}

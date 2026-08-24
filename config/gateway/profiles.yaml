@@ -4,6 +4,7 @@ backends:
     kind: llama.cpp
     enabled: true
     base_url: http://llama:8080
+    base_url_env: LLAMA_BASE_URL
     api_key_env: LLAMA_API_KEY
     coordinator: explicit
     serialize_requests: true

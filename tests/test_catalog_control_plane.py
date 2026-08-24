@@ -5,7 +5,6 @@ from pathlib import Path
 
 import yaml
 
-
 spec = importlib.util.spec_from_file_location("hubctl", Path("ops/hubctl.py"))
 assert spec and spec.loader
 hubctl = importlib.util.module_from_spec(spec)
@@ -135,4 +134,5 @@ def test_kubernetes_values_include_declared_capabilities_and_storage() -> None:
     values = hubctl.catalog_to_k8s_values(catalog)
     assert values["models"]["cluster"]["capabilities"] == {"chat": {}, "code": {}}
     assert values["models"]["cluster"]["features"] == {"tools": True}
-    assert values["llama"]["extraVolumes"][0]["persistentVolumeClaim"]["claimName"] == "shared-weights"
+    volume_claim = values["llama"]["extraVolumes"][0]["persistentVolumeClaim"]
+    assert volume_claim["claimName"] == "shared-weights"
