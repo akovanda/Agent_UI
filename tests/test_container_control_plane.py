@@ -131,6 +131,19 @@ def test_hub_tool_bundle_enables_terminal_search_and_memories() -> None:
     assert "http://open-terminal:8000" in hub_script
 
 
+def test_catalog_apply_does_not_force_a_profiled_llama_service() -> None:
+    hub_script = Path("hub").read_text(encoding="utf-8")
+    apply_block = hub_script.split("apply_runtime_if_running() {", maxsplit=1)[1].split(
+        "ensure_initialized() {", maxsplit=1
+    )[0]
+
+    assert "compose config --services" in apply_block
+    assert "local targets=(config-init gateway)" in apply_block
+    assert "targets=(config-init llama gateway)" in apply_block
+    assert 'compose up -d --build --force-recreate "${targets[@]}"' in apply_block
+    assert "compose up -d --build --force-recreate config-init llama gateway" not in apply_block
+
+
 def test_hub_is_executable_and_exposes_ai_first_commands() -> None:
     path = Path("hub")
     mode = path.stat().st_mode

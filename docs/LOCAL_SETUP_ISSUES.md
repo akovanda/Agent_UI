@@ -434,7 +434,9 @@ friction.
   installation still depended on local llama.cpp, a GPU reservation, and its image lifecycle.
 - Resolution: Runtime rendering now places llama.cpp behind an inactive Compose profile when no
   enabled local llama model exists and marks the gateway dependency optional. Registering an
-  enabled local llama model leaves the original service and health dependency active.
+  enabled local llama model leaves the original service and health dependency active. Catalog
+  application also checks the effective Compose service set before explicitly recreating llama.cpp,
+  so applying an external-only catalog does not activate the otherwise inactive profile.
 
 ### The smoke test unconditionally required llama.cpp
 

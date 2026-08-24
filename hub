@@ -147,11 +147,16 @@ services_running() {
 }
 
 apply_runtime_if_running() {
-  local running
+  local active running
   running="$(services_running)"
   if grep -qx llama <<<"$running" || grep -qx gateway <<<"$running"; then
-    compose up -d --build --force-recreate config-init llama gateway
-    printf 'Recreated inference and gateway services with the updated catalog.\n'
+    local targets=(config-init gateway)
+    active="$(compose config --services 2>/dev/null || true)"
+    if grep -qx llama <<<"$active"; then
+      targets=(config-init llama gateway)
+    fi
+    compose up -d --build --force-recreate "${targets[@]}"
+    printf 'Recreated the active inference and gateway services with the updated catalog.\n'
   fi
 }
 
