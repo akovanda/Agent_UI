@@ -6,7 +6,7 @@ friction.
 
 ## Environment
 
-- Date: 2026-08-22 through 2026-08-23 UTC
+- Date: 2026-08-22 through 2026-08-24 UTC
 - Host: Linux with Docker Compose v2 and the NVIDIA container runtime
 - Checkout: `akovanda/Agent_UI`, branch `fix/v03-local-readiness`
 - Local inference reused during setup: Ollama at `127.0.0.1:11436`
@@ -268,6 +268,23 @@ friction.
 - Suggested follow-up: Diagnose the host's overlay/containerd metadata and I/O behavior in a
   maintenance window, reproduce with daemon metrics enabled, and use a reproducible multi-stage
   image build or a published image instead of `docker commit` for future fallback packaging.
+
+### 16. A host-wide HTTPS listener blocks the default Tailscale Serve port
+
+- Status: Open host-networking observation; tailnet-only workaround applied
+- Area: Remote UI access through Tailscale Serve
+- Observed: The existing `devpi-caddy-1` container publishes TCP port 443 on `0.0.0.0` and
+  `[::]`. Tailscale accepted a tailnet-only HTTPS proxy configuration on port 443, but
+  `tailscaled` could not bind either Tailscale address and the client saw a TLS internal error.
+- Impact: A valid-looking `tailscale serve status` entry can remain unreachable when another
+  service owns the same port on every host address.
+- Current workaround: Keep the existing Caddy listener and unrelated Tailscale routes intact,
+  and expose the loopback-only Open WebUI fallback at
+  `https://ucs.tail9d8219.ts.net:8444/`. The route is tailnet-only (Funnel is not enabled), and
+  certificate validation plus the root page, `/health`, and `/api/version` were verified through
+  Tailscale.
+- Suggested follow-up: Reserve and document host ports used by Caddy and Tailscale Serve, and add
+  a listener-conflict preflight before installing a new Serve route.
 
 ## Resolved during setup
 
