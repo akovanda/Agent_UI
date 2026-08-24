@@ -499,9 +499,7 @@ def cmd_runtime_render(args: argparse.Namespace) -> int:
         mode=0o600,
     )
     atomic_write(llama_key_output, os.getenv("LLAMA_API_KEY", "") + "\n", mode=0o600)
-    apply_runtime_ownership(
-        [models_ini, catalog_output, profiles_output, llama_key_output]
-    )
+    apply_runtime_ownership([models_ini, catalog_output, profiles_output, llama_key_output])
     if args.compose_output:
         atomic_write(
             Path(args.compose_output),

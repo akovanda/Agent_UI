@@ -284,9 +284,7 @@ def test_runtime_compose_override_is_host_readable(tmp_path: Path) -> None:
     assert stat.S_IMODE((runtime_dir / "catalog.resolved.json").stat().st_mode) == 0o600
 
 
-def test_runtime_render_assigns_configured_service_ownership(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_runtime_render_assigns_configured_service_ownership(tmp_path: Path, monkeypatch) -> None:
     ownership: list[tuple[str, int, int]] = []
     monkeypatch.setenv("RUNTIME_CONFIG_UID", "10001")
     monkeypatch.setenv("RUNTIME_CONFIG_GID", "10002")
