@@ -56,12 +56,31 @@ spec:
                 secretKeyRef:
                   name: {{ include "local-ai-hub.secretName" . }}
                   key: gateway-api-key
+            - name: WEBUI_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: webui-secret-key
+            - name: MEMORY_SUBJECT_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: memory-subject-hmac-key
+                  optional: true
+            - name: CONTINUITY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: continuity-api-token
+                  optional: true
             - name: DEFAULT_USER_ID
               value: {{ .Values.gateway.defaultUserId | quote }}
             - name: PROFILE_CONFIG_PATH
               value: /runtime/catalog.resolved.json
             - name: MODEL_CATALOG_PATH
               value: /runtime/catalog.resolved.json
+            - name: MEMORY_CONFIG_PATH
+              value: /runtime/memory.resolved.yaml
             - name: MEMORY_ENABLED
               value: {{ .Values.gateway.memoryEnabled | quote }}
             - name: MEMORY_REQUIRED

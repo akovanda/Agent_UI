@@ -6,6 +6,7 @@ ENV_FILE="${AGENT_UI_ENV_FILE:-${LOCAL_AI_HUB_ENV_FILE:-$ROOT/.env}}"
 COMPOSE_FILE="${AGENT_UI_COMPOSE_FILE:-${LOCAL_AI_HUB_COMPOSE_FILE:-$ROOT/compose.yaml}}"
 GENERATED_DIR="$ROOT/.agent-ui"
 GENERATED_COMPOSE_FILE="$GENERATED_DIR/compose.generated.yaml"
+LOCAL_COMPOSE_FILE="${AGENT_UI_LOCAL_COMPOSE_FILE:-$GENERATED_DIR/compose.local.yaml}"
 DEFAULT_TOOLBOX_IMAGE="agent-ui-toolbox:0.3.0"
 
 fail() {
@@ -55,6 +56,9 @@ compose() {
   )
   if [[ -s "$GENERATED_COMPOSE_FILE" ]]; then
     args+=(-f "$GENERATED_COMPOSE_FILE")
+  fi
+  if [[ -s "$LOCAL_COMPOSE_FILE" ]]; then
+    args+=(-f "$LOCAL_COMPOSE_FILE")
   fi
   docker compose "${args[@]}" "$@"
 }
@@ -327,6 +331,85 @@ catalog_command() {
   esac
 }
 
+memory_command() {
+  local subcommand="${1:-}"
+  shift || true
+  case "$subcommand" in
+    apply|plan)
+      local file="${1:-}"
+      [[ -n "$file" ]] || fail "usage: ./hub memory $subcommand FILE [options]"
+      shift
+      file="$(absolute_path "$file")"
+      [[ -f "$file" ]] || fail "Memory configuration file does not exist: $file"
+      local file_dir state_volume model_volume runtime_volume hermes_volume
+      file_dir="$(dirname "$file")"
+      state_volume="$(env_value HUB_STATE_VOLUME agent-ui-state)"
+      model_volume="$(env_value MODELS_VOLUME agent-ui-models)"
+      runtime_volume="$(env_value RUNTIME_CONFIG_VOLUME agent-ui-runtime-config)"
+      hermes_volume="$(env_value HERMES_VOLUME agent-ui-hermes)"
+      local command=(memory apply --file "$file")
+      [[ "$subcommand" == plan ]] && command+=(--dry-run)
+      docker run --rm --network host --env-file "$ENV_FILE" \
+        -v "$ROOT:/workspace" -v "$file_dir:$file_dir:ro" \
+        -v "$state_volume:/state" -v "$model_volume:/models" \
+        -v "$runtime_volume:/runtime" -v "$hermes_volume:/hermes" \
+        "$(toolbox_image)" "${command[@]}" "$@"
+      if [[ "$subcommand" == apply ]]; then
+        render_runtime
+        apply_runtime_if_running
+      fi
+      ;;
+    enable|disable)
+      run_toolbox_all memory "$subcommand" "$@"
+      render_runtime
+      apply_runtime_if_running
+      ;;
+    show)
+      run_toolbox_all memory show "$@"
+      ;;
+    status)
+      local bind
+      bind="$(env_value BIND_ADDRESS 127.0.0.1)"
+      [[ "$bind" == "0.0.0.0" ]] && bind=127.0.0.1
+      run_toolbox_all memory status \
+        --gateway-url "http://${bind}:$(env_value GATEWAY_HOST_PORT)" "$@"
+      ;;
+    export)
+      local output="${1:-$ROOT/.agent-ui/memory-export.json}"
+      [[ $# -eq 0 ]] || shift
+      mkdir -p "$(dirname "$output")"
+      output="$(absolute_path "$output")"
+      local output_dir output_name bind
+      output_dir="$(dirname "$output")"; output_name="$(basename "$output")"
+      bind="$(env_value BIND_ADDRESS 127.0.0.1)"
+      [[ "$bind" == "0.0.0.0" ]] && bind=127.0.0.1
+      docker run --rm --network host --env-file "$ENV_FILE" \
+        -v "$output_dir:/export" "$(toolbox_image)" memory export \
+        --gateway-url "http://${bind}:$(env_value GATEWAY_HOST_PORT)" \
+        --output "/export/$output_name" "$@"
+      chmod 0600 "$output"
+      printf 'Memory export written to %s\n' "$output"
+      ;;
+    import)
+      local file="${1:-}"
+      [[ -n "$file" ]] || fail "usage: ./hub memory import FILE"
+      shift
+      file="$(absolute_path "$file")"
+      [[ -f "$file" ]] || fail "Memory import file does not exist: $file"
+      local file_dir file_name bind
+      file_dir="$(dirname "$file")"; file_name="$(basename "$file")"
+      bind="$(env_value BIND_ADDRESS 127.0.0.1)"
+      [[ "$bind" == "0.0.0.0" ]] && bind=127.0.0.1
+      docker run --rm --network host --env-file "$ENV_FILE" \
+        -v "$file_dir:/import:ro" "$(toolbox_image)" memory import "/import/$file_name" \
+        --gateway-url "http://${bind}:$(env_value GATEWAY_HOST_PORT)" "$@"
+      ;;
+    *)
+      fail "memory command must be one of: plan, apply, enable, disable, show, status, export, import"
+      ;;
+  esac
+}
+
 kube_mount_args() {
   local kube_dir="${KUBECONFIG_DIR:-$HOME/.kube}"
   [[ -d "$kube_dir" ]] || fail "Kubernetes config directory not found: $kube_dir"
@@ -532,6 +615,11 @@ AI-first catalog:
   catalog validate FILE
   catalog show [--json]
 
+Optional memory:
+  memory plan FILE | apply FILE       Validate or apply a provider-neutral overlay
+  memory enable | disable | show | status
+  memory export [FILE] | import FILE
+
 Models:
   model list
   model discover PATH [--recursive] [--capability NAME]
@@ -623,6 +711,7 @@ main() {
     compose) compose "$@" ;;
     model) ensure_initialized; build_toolbox; create_volumes; model_command "$@" ;;
     catalog) ensure_initialized; build_toolbox; create_volumes; catalog_command "$@" ;;
+    memory) ensure_initialized; build_toolbox; create_volumes; memory_command "$@" ;;
     doctor)
       ensure_initialized
       build_toolbox

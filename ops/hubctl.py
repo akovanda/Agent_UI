@@ -41,10 +41,15 @@ SECRET_KEYS = (
     "LLAMA_API_KEY",
     "GATEWAY_API_KEY",
     "WEBUI_SECRET_KEY",
+    "MEMORY_SUBJECT_HMAC_KEY",
     "HERMES_API_KEY",
     "HERMES_DASHBOARD_PASSWORD",
 )
-OPTIONAL_SECRET_KEYS = ("SEARXNG_SECRET_KEY", "OPEN_TERMINAL_API_KEY")
+OPTIONAL_SECRET_KEYS = (
+    "SEARXNG_SECRET_KEY",
+    "OPEN_TERMINAL_API_KEY",
+    "CONTINUITY_API_TOKEN",
+)
 RESOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
@@ -200,6 +205,30 @@ def validate_catalog(catalog: dict[str, Any]) -> None:
             raise HubError(f"Experience {experience_id} references unknown model {pinned!r}")
         if not pinned and not capability and experience.get("route") != "auto":
             raise HubError(f"Experience {experience_id} requires model, capability, or route: auto")
+
+
+def validate_memory_config(config: dict[str, Any]) -> None:
+    if config.get("version") != 1:
+        raise HubError("Memory configuration must declare version: 1")
+    provider = config.get("provider")
+    automatic = config.get("automatic")
+    if not isinstance(provider, dict) or not isinstance(automatic, dict):
+        raise HubError("Memory configuration requires provider and automatic mappings")
+    kind = provider.get("kind", "builtin-postgres")
+    if kind not in {"builtin-postgres", "continuity-http", "disabled"}:
+        raise HubError(f"Unsupported memory provider kind: {kind!r}")
+    if kind == "continuity-http" and not provider.get("base_url"):
+        raise HubError("continuity-http memory providers require base_url")
+    if not isinstance(automatic.get("enabled", False), bool):
+        raise HubError("automatic.enabled must be a boolean")
+
+
+def load_memory_config(config: Path, overlay: Path | None) -> dict[str, Any]:
+    merged = read_yaml(config)
+    if overlay is not None and overlay.exists():
+        merged = merge_mapping(merged, read_yaml(overlay, missing_ok=True))
+    validate_memory_config(merged)
+    return merged
 
 
 def load_catalog(catalog: Path, overlay: Path | None) -> dict[str, Any]:
@@ -482,6 +511,7 @@ def cmd_runtime_render(args: argparse.Namespace) -> int:
     catalog_output = runtime_dir / "catalog.resolved.json"
     profiles_output = runtime_dir / "profiles.json"
     llama_key_output = runtime_dir / "llama_api_key"
+    memory_output = runtime_dir / "memory.resolved.yaml"
     atomic_write(
         models_ini,
         render_models_ini(catalog, models_dir, fit_target),
@@ -499,7 +529,14 @@ def cmd_runtime_render(args: argparse.Namespace) -> int:
         mode=0o600,
     )
     atomic_write(llama_key_output, os.getenv("LLAMA_API_KEY", "") + "\n", mode=0o600)
-    apply_runtime_ownership([models_ini, catalog_output, profiles_output, llama_key_output])
+    memory = load_memory_config(
+        Path(getattr(args, "memory_config", "config/memory/base.yaml")),
+        (Path(args.memory_overlay) if getattr(args, "memory_overlay", None) else None),
+    )
+    atomic_write(memory_output, yaml.safe_dump(memory, sort_keys=False), mode=0o600)
+    apply_runtime_ownership(
+        [models_ini, catalog_output, profiles_output, llama_key_output, memory_output]
+    )
     if args.compose_output:
         atomic_write(
             Path(args.compose_output),
@@ -515,6 +552,8 @@ def cmd_runtime_render(args: argparse.Namespace) -> int:
                 "backends": len(catalog.get("backends", {})),
                 "models": len(catalog.get("models", {})),
                 "experiences": len(catalog.get("experiences", {})),
+                "memory_provider": memory["provider"]["kind"],
+                "automatic_memory": bool(memory["automatic"].get("enabled", False)),
             }
         )
     )
@@ -834,6 +873,105 @@ def cmd_catalog_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory_apply(args: argparse.Namespace) -> int:
+    incoming = read_yaml(Path(args.file))
+    if incoming.get("version") not in {None, 1}:
+        raise HubError("Applied memory documents must use version: 1")
+    overlay_path = Path(args.overlay)
+    current_overlay = {} if args.replace else read_yaml(overlay_path, missing_ok=True)
+    candidate_overlay = incoming if args.replace else merge_mapping(current_overlay, incoming)
+    merged = merge_mapping(read_yaml(Path(args.config)), candidate_overlay)
+    validate_memory_config(merged)
+    result = {
+        "valid": True,
+        "provider": merged["provider"]["kind"],
+        "automatic_enabled": bool(merged["automatic"].get("enabled", False)),
+        "required": bool(merged["provider"].get("required", False)),
+        "dry_run": args.dry_run,
+    }
+    if not args.dry_run:
+        atomic_write(
+            overlay_path,
+            yaml.safe_dump(candidate_overlay, sort_keys=False),
+            mode=0o600,
+        )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_memory_show(args: argparse.Namespace) -> int:
+    config = load_memory_config(Path(args.config), Path(args.overlay))
+    print(json.dumps(config, indent=2) if args.json else yaml.safe_dump(config, sort_keys=False))
+    return 0
+
+
+def cmd_memory_toggle(args: argparse.Namespace) -> int:
+    overlay_path = Path(args.overlay)
+    overlay = read_yaml(overlay_path, missing_ok=True)
+    automatic = overlay.setdefault("automatic", {})
+    if not isinstance(automatic, dict):
+        raise HubError("memory overlay automatic value must be a mapping")
+    automatic["enabled"] = args.enabled
+    merged = merge_mapping(read_yaml(Path(args.config)), overlay)
+    validate_memory_config(merged)
+    atomic_write(overlay_path, yaml.safe_dump(overlay, sort_keys=False), mode=0o600)
+    print(
+        json.dumps(
+            {
+                "status": "enabled" if args.enabled else "disabled",
+                "new_accounts_default_enabled": bool(
+                    merged["automatic"].get("default_user_enabled", True)
+                ),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _memory_gateway(args: argparse.Namespace) -> tuple[str, dict[str, str]]:
+    url = args.gateway_url or f"http://127.0.0.1:{os.getenv('GATEWAY_HOST_PORT', '8000')}"
+    key = args.api_key or os.getenv("GATEWAY_API_KEY", "")
+    if not key:
+        raise HubError("GATEWAY_API_KEY is required for memory API commands")
+    return url.rstrip("/"), {"Authorization": f"Bearer {key}"}
+
+
+def cmd_memory_status(args: argparse.Namespace) -> int:
+    url, headers = _memory_gateway(args)
+    response = requests.get(f"{url}/api/memory/v1/status", headers=headers, timeout=30)
+    response.raise_for_status()
+    print(json.dumps(response.json(), indent=2))
+    return 0
+
+
+def cmd_memory_export(args: argparse.Namespace) -> int:
+    url, headers = _memory_gateway(args)
+    response = requests.get(f"{url}/api/memory/v1/export", headers=headers, timeout=120)
+    response.raise_for_status()
+    content = json.dumps(response.json(), indent=2) + "\n"
+    if args.output:
+        atomic_write(Path(args.output), content, mode=0o600)
+        print(json.dumps({"status": "exported", "output": args.output}))
+    else:
+        print(content, end="")
+    return 0
+
+
+def cmd_memory_import(args: argparse.Namespace) -> int:
+    url, headers = _memory_gateway(args)
+    payload = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    response = requests.post(
+        f"{url}/api/memory/v1/import",
+        headers={**headers, "X-Agent-UI-CSRF": "1"},
+        json=payload,
+        timeout=300,
+    )
+    response.raise_for_status()
+    print(json.dumps(response.json(), indent=2))
+    return 0
+
+
 def catalog_to_k8s_values(catalog: dict[str, Any]) -> dict[str, Any]:
     values: dict[str, Any] = {
         "catalog": catalog,
@@ -938,6 +1076,16 @@ def add_catalog_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--overlay", default="/state/catalog.local.yaml")
 
 
+def add_memory_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", default="/opt/agent-ui/config/memory/base.yaml")
+    parser.add_argument("--overlay", default="/state/memory.local.yaml")
+
+
+def add_memory_gateway_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--gateway-url")
+    parser.add_argument("--api-key")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-ui-ctl")
     subparsers = parser.add_subparsers(dest="group", required=True)
@@ -960,6 +1108,8 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_render.add_argument("--runtime-dir", default="/runtime")
     runtime_render.add_argument("--hermes-dir")
     runtime_render.add_argument("--compose-output")
+    runtime_render.add_argument("--memory-config", default="/opt/agent-ui/config/memory/base.yaml")
+    runtime_render.add_argument("--memory-overlay", default="/state/memory.local.yaml")
     runtime_render.set_defaults(handler=cmd_runtime_render)
 
     model_parser = subparsers.add_parser("model")
@@ -1064,6 +1214,36 @@ def build_parser() -> argparse.ArgumentParser:
     add_catalog_args(k8s_values)
     k8s_values.add_argument("--output")
     k8s_values.set_defaults(handler=cmd_catalog_k8s_values)
+
+    memory_parser = subparsers.add_parser("memory")
+    memory_sub = memory_parser.add_subparsers(dest="command", required=True)
+    memory_apply = memory_sub.add_parser("apply")
+    add_memory_args(memory_apply)
+    memory_apply.add_argument("--file", required=True)
+    memory_apply.add_argument("--replace", action="store_true")
+    memory_apply.add_argument("--dry-run", action="store_true")
+    memory_apply.set_defaults(handler=cmd_memory_apply)
+    memory_show = memory_sub.add_parser("show")
+    add_memory_args(memory_show)
+    memory_show.add_argument("--json", action="store_true")
+    memory_show.set_defaults(handler=cmd_memory_show)
+    memory_enable = memory_sub.add_parser("enable")
+    add_memory_args(memory_enable)
+    memory_enable.set_defaults(handler=cmd_memory_toggle, enabled=True)
+    memory_disable = memory_sub.add_parser("disable")
+    add_memory_args(memory_disable)
+    memory_disable.set_defaults(handler=cmd_memory_toggle, enabled=False)
+    memory_status = memory_sub.add_parser("status")
+    add_memory_gateway_args(memory_status)
+    memory_status.set_defaults(handler=cmd_memory_status)
+    memory_export = memory_sub.add_parser("export")
+    add_memory_gateway_args(memory_export)
+    memory_export.add_argument("--output")
+    memory_export.set_defaults(handler=cmd_memory_export)
+    memory_import = memory_sub.add_parser("import")
+    add_memory_gateway_args(memory_import)
+    memory_import.add_argument("file")
+    memory_import.set_defaults(handler=cmd_memory_import)
 
     doctor = subparsers.add_parser("doctor")
     doctor.add_argument("--env-file", default="/workspace/.env")

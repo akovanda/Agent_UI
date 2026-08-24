@@ -156,11 +156,18 @@ The reference Compose stack disables Open WebUI's independent personal memory by
 OPEN_WEBUI_ENABLE_MEMORIES=false
 ```
 
-Agent UI shared memory remains available for experiences that enable it. Running both systems is possible, but duplicates and conflicting facts are harder to reason about.
+Agent UI automatic memory is also off until `./hub memory enable`; these are independent switches.
+Running both systems is possible, but duplicates and conflicting facts are harder to reason about.
+Agent UI uses review-first proposals and exposes them at the gateway `/memory` page. The browser can
+reuse Open WebUI's signed login cookie when the gateway is reached through the same host name.
 
 ## Users
 
-Open WebUI authentication is enabled. The first account becomes administrator in the standard first-run flow. For multi-user memory isolation, ensure a stable user identifier is forwarded to Agent UI through `X-Agent-UI-User`; otherwise the configured default user is used.
+Open WebUI authentication is enabled. The first account becomes administrator in the standard
+first-run flow. Compose enables signed user-info forwarding: Open WebUI sends
+`X-OpenWebUI-User-Jwt`, signed with `WEBUI_SECRET_KEY`, on gateway model calls. Agent UI validates
+the token and derives a pseudonymous provider subject. Do not replace it with a browser-supplied or
+reverse-proxy-supplied username header.
 
 ## Exposure
 

@@ -8,7 +8,7 @@ friction.
 
 - Date: 2026-08-22 through 2026-08-24 UTC
 - Host: Linux with Docker Compose v2 and the NVIDIA container runtime
-- Checkout: `akovanda/Agent_UI`, branch `fix/v03-local-readiness`
+- Checkout: `akovanda/Agent_UI`; validation continued on `feat/optional-memory-foundation`
 - Local inference reused during setup: Ollama at `127.0.0.1:11436`
 - Local UI validation: Open WebUI 0.11.0 at `127.0.0.1:46763`
 
@@ -407,6 +407,91 @@ friction.
   while comparing behavior interactively.
 - Suggested follow-up: Surface warm/cold state and measured load latency in model metadata, add a
   swap-aware progress indicator, and tune per-model context/KV-cache settings for this 16 GiB GPU.
+
+### 23. Provider discovery passed while newly approved plain records were not recallable
+
+- Status: Resolved in this PR and the corresponding provider-contract change
+- Area: `continuity-http/1` context loading and Agent UI provider adaptation
+- Observed: The live disposable create/list/purge lifecycle passed, but a search immediately after
+  create returned no match. Provider health and capability discovery were green. The provider's
+  compiled context returned facts, commitments, summaries, and summary evidence, but a new plain
+  note did not enter any of those projections before consolidation.
+- Impact: A user could approve a personal memory, see it on the management page, and still receive
+  no recalled context in chat. Health checks alone could not detect the semantic integration gap.
+- Resolution: Context loads now expose bounded, ranked `record_hits` for active source records, and
+  the Agent UI adapter consumes and deduplicates those alongside structured context. Correction
+  and soft-forget regression tests cover the same lane. A live create/search/hard-purge probe then
+  matched the new record and left no disposable active records behind.
+- Suggested follow-up: Keep one black-box semantic probe in provider compatibility CI; discovery,
+  health, and response-shape mocks are not sufficient integration coverage.
+
+### 24. Direct source-record recall uses a linear scan on the initial Postgres implementation
+
+- Status: Open performance follow-up; bounded output, acceptable for the initial personal rollout
+- Area: External provider direct `record_hits`
+- Observed: The initial correctness fix ranks active records from each visible scope lineage in
+  process. Postgres currently loads those source records before ranking because the record log has
+  no dedicated indexed search column.
+- Impact: Recall cost grows with retained source-record count even though the returned result is
+  bounded. This is unlikely to matter for early personal use but is not the desired steady-state
+  path for large histories or busy game worlds.
+- Current workaround: Keep `record_limit` small (default 8), retain strict scope isolation, and use
+  the existing facts/commitments/summary indexes for structured recall.
+- Suggested follow-up: Add an indexed source-record search vector (or equivalent provider-native
+  candidate query), retrieve a bounded candidate set in Postgres, and benchmark semantic quality
+  plus latency before changing the stable HTTP response.
+
+### 25. The out-of-band Open WebUI fallback can drift from Compose identity settings
+
+- Status: Local workaround applied; fallback lifecycle remains open
+- Area: Signed user forwarding and the non-Compose Open WebUI fallback
+- Observed: Agent UI's Compose service gained signed user-header forwarding, but the already-running
+  wheel-based fallback process did not inherit those new environment variables. Restarting it with
+  an updated ignored local launcher injected the signed-forwarding settings. During that restart,
+  the Open WebUI process spent roughly two minutes in uninterruptible disk sleep and the loopback
+  forwarder returned empty replies before `/api/config` recovered.
+- Impact: Without the signed header, all Open WebUI model requests authenticate only as the shared
+  gateway key and collapse onto the default local principal, defeating per-user memory isolation.
+  The slow fallback restart can also resemble the earlier frontend-only/backend-required failure.
+- Current workaround: The ignored local launcher now supplies
+  `ENABLE_FORWARD_USER_INFO_HEADERS` and `FORWARD_USER_INFO_HEADER_JWT_SECRET`; variable presence,
+  Open WebUI 0.11.0 configuration, gateway health, and authenticated Tailscale memory access were
+  revalidated after recovery.
+- Suggested follow-up: Replace the out-of-band fallback with the Compose-managed image, or ship a
+  reproducible fallback unit whose environment is generated from the same contract as Compose and
+  whose readiness probe checks `/api/config` rather than the static frontend alone.
+
+### 26. Built-in proposal approval initially lacked provider-level idempotency
+
+- Status: Resolved in this PR
+- Area: Built-in PostgreSQL provider and concurrent proposal/event ingestion
+- Observed: Continuity accepts the proposal or event identifier as its record id, but the built-in
+  provider originally discarded that identifier and generated a new UUID on every write. Two
+  approval requests that overlapped before the proposal state transition could therefore create a
+  duplicate or orphaned built-in record even though only one request won the state transition.
+- Impact: A narrow concurrency race could retain the same approved fact more than once when users
+  selected the built-in provider instead of Continuity.
+- Resolution: The built-in adapter now derives a deterministic UUID from the provider scope and
+  caller idempotency key. PostgreSQL inserts return the existing same-scope record on a retry and
+  reject a cross-scope collision; regression coverage verifies retry and space-isolation behavior.
+- Suggested follow-up: If provider writes gain more multi-step side effects, move approvals and
+  game-event delivery to the existing durable job/outbox seam for explicit retry observability.
+
+### 27. Fresh external-provider metadata startup was coupled to the legacy vector schema
+
+- Status: Resolved in this PR
+- Area: PostgreSQL governance migration ownership
+- Observed: Running only the new governance migration on a fresh database originally failed because
+  it unconditionally altered the legacy `memories` table. A temporary fix replayed every packaged
+  migration, but that would also require the vector extension and create the built-in content table
+  for installations whose content provider is external.
+- Impact: The supposedly provider-neutral control plane could reject an otherwise valid standard
+  PostgreSQL database or install unused provider-specific schema.
+- Resolution: The governance migration now alters the legacy table only when it exists, and the
+  governance repository applies only its own migration. The built-in store continues to apply the
+  legacy content schema before governance when that provider is actually selected.
+- Suggested follow-up: Introduce a small migration ledger and separate content-provider and
+  governance migration directories before either schema gains a second non-idempotent migration.
 
 ## Resolved during setup
 

@@ -4,13 +4,14 @@
 
 Agent UI is a generic local AI control plane. It should remain useful when model families, runtimes, modalities, and storage layouts change.
 
-The system therefore avoids model-name heuristics and separates five resource types:
+The system therefore avoids model-name heuristics and separates six resource types:
 
 1. **Storage/artifact source** — where weights or related files live.
 2. **Backend** — which inference API serves requests.
 3. **Model** — a registered deployment on a backend.
 4. **Experience** — a stable human-facing name selecting a capability.
 5. **Client surface** — the UI or API consumer used during live operation.
+6. **Memory policy/provider** — optional identity, space, lifecycle, and provider configuration.
 
 ## Provisioning versus live use
 
@@ -19,6 +20,7 @@ Provisioning plane                         Runtime plane
 ──────────────────────────────────         ─────────────────────────────
 AI setup agent / human operator            Human UI driver
 ./hub catalog plan/apply                   Open WebUI
+./hub memory plan/apply/enable             Memory review page
 ./hub model discover/link/register         Story workspace (optional)
 JSON Schema + YAML overlay                 Agent workspace (optional)
 Docker/Helm mount generation               OpenAI-compatible clients
@@ -51,7 +53,7 @@ Story workspace (optional) ───────┼──► Agent UI Gateway
 Agent workspace (optional) ───────┘          │
                                              ├── catalog/experience resolver
                                              ├── reasoning/feature translator
-                                             ├── memory isolation
+                                             ├── optional memory policy/spaces
                                              ├── backend registry
                                              └── metrics and policy boundary
                                                         │
@@ -64,7 +66,10 @@ Agent workspace (optional) ───────┘          │
                      resident as policy
 ```
 
-PostgreSQL/pgvector stores shared memory and UI data. Compose is the default deployment mechanism; Helm provides the cluster equivalent.
+PostgreSQL/pgvector stores the built-in memory provider, memory control-plane metadata, and UI
+data. An installation may instead attach a `continuity-http/1` provider while keeping Agent UI's
+policy metadata in PostgreSQL. Compose is the default deployment mechanism; Helm provides the
+cluster equivalent.
 
 ## Catalog lifecycle
 
@@ -103,6 +108,8 @@ A zero-model catalog is valid. The gateway starts, reports `setup_required`, exp
 10. Forward or stream the request.
 11. Release resources on normal completion, disconnect, cancellation, or error.
 12. Emit route and latency metrics without storing prompt content.
+13. After successful completion, optionally enqueue the latest user-authored text for a separate,
+    review-only proposal extraction job.
 
 ## Backend model
 
@@ -151,7 +158,19 @@ The catalog generates model values plus `llama.extraVolumes` and `llama.extraVol
 
 ## Memory boundary
 
-Shared memory is keyed by user and namespace. Experiences define allowed namespaces. Retrieved memory is inserted under a heading that explicitly labels it as untrusted reference material. It does not become a system authority merely because it was previously stored.
+Memory configuration is versioned independently from the model catalog. Signed UI identity or a
+fixed-principal API key resolves to a server-owned space membership; caller-selected usernames and
+namespaces are not authorization inputs. Personal provider scopes use an opaque space UUID and an
+HMAC-derived subject. Game spaces use a separate world/campaign/player/session hierarchy.
+
+The provider SPI covers health, context load, ingest, list, correction, soft forget, hard purge,
+and export. Agent UI owns user settings, proposals, record references, bridge consent, jobs, and a
+content-free audit. Automatic capture/retrieval remains off until operator enablement. Story/game
+content is excluded from personal memory by default, and cross-space bridges are separate
+directional reads requiring an operator allowlist plus exact two-sided user consent.
+
+Retrieved memory is inserted under a heading that explicitly labels it as untrusted reference
+material. It does not become a system authority merely because it was previously stored.
 
 ## Extension paths
 

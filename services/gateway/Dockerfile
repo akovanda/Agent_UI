@@ -12,6 +12,7 @@ COPY pyproject.toml README.md ./
 COPY services/gateway/src ./services/gateway/src
 COPY services/gateway/migrations ./services/gateway/migrations
 COPY config/gateway ./config
+COPY config/memory ./config/memory
 
 RUN pip install .
 

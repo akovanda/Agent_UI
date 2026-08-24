@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import stat
 from argparse import Namespace
@@ -23,6 +24,27 @@ def test_base_catalog_is_model_neutral() -> None:
     assert {"chat", "code", "story", "image", "agent"}.issubset(catalog["experiences"])
 
 
+def test_base_memory_is_generic_optional_and_uses_signed_identity() -> None:
+    memory = yaml.safe_load(Path("config/memory/base.yaml").read_text(encoding="utf-8"))
+    assert memory["version"] == 1
+    assert memory["provider"]["kind"] == "builtin-postgres"
+    assert memory["automatic"]["enabled"] is False
+    assert memory["automatic"]["capabilities"] == ["chat", "code", "agent"]
+    assert "story" in memory["automatic"]["excluded_experiences"]
+    assert memory["identity"]["forwarded_jwt_header"] == "X-OpenWebUI-User-Jwt"
+    assert memory["identity"]["allow_legacy_loopback_headers"] is False
+    assert "akovanda" not in json.dumps(memory).lower()
+
+
+def test_hub_layers_ignored_local_compose_after_generated_runtime() -> None:
+    hub = Path("hub").read_text(encoding="utf-8")
+    generated = 'args+=(-f "$GENERATED_COMPOSE_FILE")'
+    local = 'args+=(-f "$LOCAL_COMPOSE_FILE")'
+    assert generated in hub
+    assert local in hub
+    assert hub.index(generated) < hub.index(local)
+
+
 def test_compose_has_optional_story_agent_and_observability_profiles() -> None:
     compose = yaml.safe_load(Path("compose.yaml").read_text(encoding="utf-8"))
     services = compose["services"]
@@ -36,6 +58,13 @@ def test_compose_has_optional_story_agent_and_observability_profiles() -> None:
     )
     assert services["config-init"]["environment"]["RUNTIME_CONFIG_GID"] == (
         "${RUNTIME_CONFIG_GID:-10001}"
+    )
+    assert services["gateway"]["environment"]["MEMORY_CONFIG_PATH"] == (
+        "/runtime/memory.resolved.yaml"
+    )
+    assert services["open-webui"]["environment"]["ENABLE_FORWARD_USER_INFO_HEADERS"] == "true"
+    assert services["open-webui"]["environment"]["FORWARD_USER_INFO_HEADER_JWT_SECRET"] == (
+        "${WEBUI_SECRET_KEY}"
     )
 
 
@@ -282,6 +311,11 @@ def test_runtime_compose_override_is_host_readable(tmp_path: Path) -> None:
     assert hubctl.cmd_runtime_render(args) == 0
     assert stat.S_IMODE(compose_output.stat().st_mode) == 0o644
     assert stat.S_IMODE((runtime_dir / "catalog.resolved.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((runtime_dir / "memory.resolved.yaml").stat().st_mode) == 0o600
+    rendered_memory = yaml.safe_load(
+        (runtime_dir / "memory.resolved.yaml").read_text(encoding="utf-8")
+    )
+    assert rendered_memory["automatic"]["enabled"] is False
 
 
 def test_runtime_render_assigns_configured_service_ownership(tmp_path: Path, monkeypatch) -> None:
@@ -308,7 +342,44 @@ def test_runtime_render_assigns_configured_service_ownership(tmp_path: Path, mon
         ("catalog.resolved.json", 10001, 10002),
         ("profiles.json", 10001, 10002),
         ("llama_api_key", 10001, 10002),
+        ("memory.resolved.yaml", 10001, 10002),
     ]
+
+
+def test_memory_plan_apply_and_enable_use_separate_overlay(tmp_path: Path) -> None:
+    overlay = tmp_path / "memory.local.yaml"
+    incoming = tmp_path / "incoming.yaml"
+    incoming.write_text(
+        yaml.safe_dump(
+            {
+                "provider": {
+                    "kind": "continuity-http",
+                    "base_url": "http://memory.example:8011",
+                    "token_env": "CONTINUITY_API_TOKEN",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        config="config/memory/base.yaml",
+        overlay=str(overlay),
+        file=str(incoming),
+        replace=False,
+        dry_run=True,
+    )
+    assert hubctl.cmd_memory_apply(args) == 0
+    assert not overlay.exists()
+    args.dry_run = False
+    assert hubctl.cmd_memory_apply(args) == 0
+    resolved = hubctl.load_memory_config(Path(args.config), overlay)
+    assert resolved["provider"]["kind"] == "continuity-http"
+    assert resolved["automatic"]["enabled"] is False
+
+    toggle = Namespace(config=args.config, overlay=str(overlay), enabled=True)
+    assert hubctl.cmd_memory_toggle(toggle) == 0
+    enabled = hubctl.load_memory_config(Path(args.config), overlay)
+    assert enabled["automatic"]["enabled"] is True
 
 
 def test_host_file_generates_read_only_bind_mount() -> None:

@@ -1,0 +1,27 @@
+version: 1
+provider:
+  kind: builtin-postgres
+  namespace: personal
+  required: false
+automatic:
+  enabled: true
+  default_user_enabled: true
+  capture: false
+  retrieval: true
+  capabilities: [chat, code, agent]
+  excluded_experiences: [story, storyteller]
+  extractor_experience: assistant
+personal:
+  context: assistant
+  subject_hmac_env: MEMORY_SUBJECT_HMAC_KEY
+retention:
+  pending_days: 30
+bridges:
+  enabled: false
+  operator_allowlist: []
+identity:
+  forwarded_jwt_header: X-OpenWebUI-User-Jwt
+  forwarded_jwt_secret_env: WEBUI_SECRET_KEY
+  browser_cookie_name: token
+  browser_cookie_secret_env: WEBUI_SECRET_KEY
+  allow_legacy_loopback_headers: false
