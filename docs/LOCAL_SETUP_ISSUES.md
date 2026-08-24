@@ -286,6 +286,27 @@ friction.
 - Suggested follow-up: Reserve and document host ports used by Caddy and Tailscale Serve, and add
   a listener-conflict preflight before installing a new Serve route.
 
+### 17. Shallow UI probes passed after its database and gateway stopped
+
+- Status: Open runtime-observability issue; services restored
+- Area: Open WebUI fallback health and core-service lifecycle
+- Observed: The PostgreSQL and gateway containers stopped at the same instant with exit code 137
+  and `OOMKilled=false`, then remained stopped despite their `unless-stopped` policy. Docker's
+  retained event stream did not identify the initiator. The separately managed Open WebUI
+  fallback stayed up, and both `/health` and `/api/version` still returned success, but
+  `/api/config` returned HTTP 500 because the backend could no longer resolve or connect to
+  PostgreSQL. The browser consequently displayed its misleading frontend-only/backend-required
+  page.
+- Impact: A Tailscale or local reachability check can report success while the browser UI is
+  unusable and model routing is offline.
+- Current workaround: Restore the core services with
+  `docker compose -f compose.yaml -f .agent-ui/compose.generated.yaml up -d postgres gateway`,
+  then verify `/api/config` through the same URL used by the browser. PostgreSQL, gateway model
+  discovery, local `/api/config`, and tailnet `/api/config` all passed after recovery.
+- Suggested follow-up: Manage the fallback UI in the same lifecycle as its dependencies and make
+  the readiness probe exercise `/api/config` plus gateway model discovery. Add explicit alerting
+  or restart diagnostics when required containers remain stopped.
+
 ## Resolved during setup
 
 ### External-only catalogs still forced the bundled llama.cpp service to start
