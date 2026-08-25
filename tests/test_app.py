@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
-from uuid import uuid4
 
 import httpx
 from fastapi.testclient import TestClient
 
 from conftest import FakeMemoryStore, make_settings
 from local_ai_hub.app import create_app
-from local_ai_hub.memory import MemoryRecord
 
 AUTH = {"Authorization": "Bearer test-secret-key"}
 
@@ -66,33 +63,33 @@ def test_auto_route_uses_story_backend_and_returns_route_headers() -> None:
 
 
 def test_memory_is_injected_as_untrusted_context() -> None:
-    now = datetime.now(UTC)
-    record = MemoryRecord(
-        id=uuid4(),
-        user_id="andrew",
-        namespace="infrastructure",
-        content="The UCS host has a Tesla T4.",
-        source="manual",
-        metadata={},
-        importance=0.8,
-        created_at=now,
-        updated_at=now,
-    )
     captured: list[dict] = []
+    memory = FakeMemoryStore()
     app = create_app(
         make_settings(),
         transport=make_transport(captured),
-        memory_store=FakeMemoryStore([record]),
+        memory_store=memory,
     )
     with TestClient(app) as client:
+        created = client.post(
+            "/api/memories",
+            headers=AUTH,
+            json={
+                "namespace": "infrastructure",
+                "content": "The UCS host has a Tesla T4.",
+                "source": "manual",
+                "importance": 0.8,
+            },
+        )
         response = client.post(
             "/v1/chat/completions",
-            headers={**AUTH, "X-Agent-UI-User": "andrew"},
+            headers=AUTH,
             json={
                 "model": "assistant",
                 "messages": [{"role": "user", "content": "What GPU is in the host?"}],
             },
         )
+    assert created.status_code == 201
     assert response.status_code == 200
     instruction_text = "\n".join(
         message["content"]

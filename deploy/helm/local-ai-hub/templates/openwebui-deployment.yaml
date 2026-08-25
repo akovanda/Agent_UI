@@ -73,6 +73,13 @@ spec:
               value: "true"
             - name: ENABLE_PERSISTENT_CONFIG
               value: "false"
+            - name: ENABLE_FORWARD_USER_INFO_HEADERS
+              value: "true"
+            - name: FORWARD_USER_INFO_HEADER_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "local-ai-hub.secretName" . }}
+                  key: webui-secret-key
             - name: DO_NOT_TRACK
               value: "true"
             - name: ANONYMIZED_TELEMETRY

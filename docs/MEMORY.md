@@ -1,121 +1,204 @@
-# Shared Memory and Knowledge
+# Optional Memory Foundation
 
-## Current behavior
-
-Shared gateway memory is explicit. The gateway does not silently save every conversation. Records
-contain:
-
-- user ID;
-- namespace;
-- content;
-- source and metadata;
-- importance and timestamps;
-- PostgreSQL full-text search data;
-- a reserved nullable vector field for later hybrid retrieval.
-
-The assistant profiles search `user`, `infrastructure`, `projects`, and `general`. The storyteller
-searches `story` and `campaign`. Direct backend aliases and the hidden Hermes profile do not inject
-gateway memory.
-
-Open WebUI's separate personal-memory injection is disabled by default. Open WebUI continues to own
-conversation history, files, and RAG collections; Hermes owns its agent memory and skills; and
-SillyTavern owns cards, lorebooks, summaries, and active scene state.
-
-## Why retrieved memory is untrusted
-
-A stored note, imported document, or web-derived chunk can contain malicious instructions. The
-gateway marks retrieved content as untrusted reference material before it reaches the model. This is
-a mitigation, not an authorization system. External tool policy must still reject privilege changes
-or side effects that originate only from retrieved text.
-
-## API examples
-
-Load the randomized host URL and generated key from `.env`:
-
-```bash
-GATEWAY_URL="http://127.0.0.1:$(awk -F= '/^GATEWAY_HOST_PORT=/{print $2}' .env)"
-GATEWAY_API_KEY="$(awk -F= '/^GATEWAY_API_KEY=/{print $2}' .env)"
-```
-
-Create a durable infrastructure fact:
-
-```bash
-curl "$GATEWAY_URL/api/memories" \
-  -H "Authorization: Bearer $GATEWAY_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "namespace": "infrastructure",
-    "content": "The local AI host is a UCS C240 M5 with 192 GB RAM and a Tesla T4.",
-    "source": "manual",
-    "importance": 0.9
-  }'
-```
-
-Search:
-
-```bash
-curl -G "$GATEWAY_URL/api/memories/search" \
-  -H "Authorization: Bearer $GATEWAY_API_KEY" \
-  --data-urlencode 'q=which GPU is in the host' \
-  --data-urlencode 'namespace=infrastructure'
-```
-
-## Namespace design
-
-Recommended conventions:
+Agent UI memory is an optional, provider-neutral layer. The public project ships with the built-in
+PostgreSQL provider configured, but automatic retrieval and capture are off. An operator can use a
+different implementation without changing models, experiences, or public source.
 
 ```text
-user                     stable preferences and non-sensitive personal context
-infrastructure           hosts, networks, services, and known-good configuration
-projects                 durable project facts and decisions
-general                  uncategorized but reusable facts
-story                     general fiction and world-building state
-campaign                  facts shared by the default storyteller profile
-campaign:<slug>           one campaign's isolated durable state
-source:<system>:<id>      imported document lineage
+signed user identity
+        │
+        ▼
+Agent UI policy and spaces ──► provider SPI ──► built-in PostgreSQL
+        │                           └──────────► continuity-http/1
+        ├── settings
+        ├── proposals and review
+        ├── memberships and bridge consent
+        ├── provider record references
+        └── content-free lifecycle audit
 ```
 
-The default storyteller profile searches `campaign`, not every `campaign:<slug>` value. Until
-dynamic campaign identity is implemented, a trusted client may append a specific namespace using
-`X-Local-AI-Memory-Namespace`.
+## Opt in
 
-## Retrieval limits and isolation
+Inspect the effective configuration:
 
-Memory lookup is bounded by `MEMORY_TOP_K` and `MEMORY_MAX_CHARS`. User identity defaults to the
-single deployment user and may be supplied only through a trusted client/header path. Namespace and
-user filters are applied before records are rendered into context.
+```bash
+./hub memory show
+./hub memory status
+```
 
-Do not use memory for secrets, raw credentials, private keys, or content that should instead remain
-in a source-of-truth system.
+Plan and apply a version-1 installation overlay:
 
-## Planned ingestion pipeline
+```bash
+./hub memory plan memory.local.yaml
+./hub memory apply memory.local.yaml
+```
+
+Enable or disable automatic behavior:
+
+```bash
+./hub memory enable
+./hub memory disable
+```
+
+`enable` is the operator consent boundary. Once enabled, accounts default to enabled unless they
+opt out on the Memory page. Opting out stops capture and retrieval; it does not silently delete
+existing records. The shipped capture mode is `review`, so enabling automatic behavior queues
+inactive candidates and still requires user approval before storage.
+
+An operator who accepts the additional retention tradeoff can select immediate persistence in a
+version-1 local overlay:
+
+```yaml
+version: 1
+automatic:
+  capture_mode: automatic
+```
+
+This changes only what happens to safe extracted candidates after successful eligible responses.
+Account opt-out, provider availability, chat/code/agent eligibility, storyteller exclusion, and
+credential rejection still apply. `./hub memory show` and `/api/memory/v1/status` expose the
+effective capture mode.
+
+The base contract lives in `config/memory/base.yaml` and is validated separately from the model
+catalog. The local overlay is stored in the ignored Agent UI state volume. Provider tokens are
+referenced by environment-variable name and never written into YAML.
+
+An installation that needs an extra private provider container may place a normal Compose override
+at `.agent-ui/compose.local.yaml`. The hub layers it after generated model mounts; the file is
+ignored by Git and is not part of the public distribution.
+
+## Providers
+
+Supported provider kinds are:
+
+- `builtin-postgres` — the compatibility provider included with Agent UI;
+- `continuity-http` — an external service implementing `continuity-http/1`;
+- `disabled` — no memory storage or retrieval.
+
+An external provider overlay is generic:
+
+```yaml
+version: 1
+provider:
+  kind: continuity-http
+  base_url: http://memory-service:8011
+  token_env: CONTINUITY_API_TOKEN
+  namespace: personal
+  required: false
+```
+
+Agent UI verifies provider discovery and requires health, context load, ingest, list, correction,
+soft forget, hard purge, and export capabilities. Personal providers must support hard purge. If
+an optional provider is unavailable, chat continues without memory and readiness reports degraded.
+Agent UI never silently writes to the built-in provider as a fallback. A required provider prevents
+startup/readiness instead.
+
+Context loading accepts provider-native structured facts, commitments, summaries, and evidence as
+well as direct `record_hits`. The direct lane makes a newly approved plain record recallable before
+provider-side consolidation has generated richer projections.
+
+Use explicit exports when changing providers:
+
+```bash
+./hub memory export ./backups/memory.json
+./hub memory import ./backups/memory.json
+```
+
+Imports use source record IDs for idempotence. Eligible legacy built-in records are moved into the
+new personal space on first trusted access. Legacy `story`, `campaign`, and `game` namespaces are
+not migrated into personal memory.
+
+## Identity and isolation
+
+Memory ownership never comes from an arbitrary caller-selected username. Open WebUI signs
+`X-OpenWebUI-User-Jwt` with `WEBUI_SECRET_KEY`; the gateway validates it and maps its opaque subject
+to a principal. The standalone Memory page validates Open WebUI's signed `token` cookie. Other
+clients use API keys bound to fixed user or service principals through ignored local configuration.
+
+Unsigned `X-Agent-UI-User` and `X-Local-AI-User` headers are disabled by default. An operator can
+enable them only as an explicit loopback compatibility mode.
+
+Agent UI owns memory spaces and membership ACLs. Provider identifiers are pseudonymous:
 
 ```text
-Source → parser → normalized document → chunks → lexical index → embeddings → hybrid retrieval
-           │             │                 │                        │
-        source hash   permissions       lineage/timestamps       evaluation
+personal namespace  configured provider namespace
+workspace           server-owned personal-space UUID
+context             assistant
+subject             HMAC of the trusted principal
+session             HMAC of the chat ID (capture provenance only)
 ```
 
-Requirements:
+Approved personal records are stored above the session level, so `chat`, `code`, and `agent`
+experiences can share them. `story` and game spaces are excluded by default. Direct model IDs do
+not automatically gain personal memory because they do not declare an experience boundary.
 
-- deterministic source IDs and hashes;
-- re-index without duplication and deletion propagation;
-- source citations and timestamps;
-- ACL/user/campaign scope before ranking;
-- bounded chunks and context injection;
-- no OCR unless needed;
-- embedding inference isolated from the active chat model;
-- lexical fallback when embeddings are unavailable.
+## Post-response capture
 
-## Memory proposals
+After a successful non-streaming response, or after a stream finishes, Agent UI queues the latest
+user-authored text. It never sends system, assistant, or tool messages to the extractor. A
+low-priority extraction request uses the configured experience and returns at most three
+schema-checked candidates.
 
-Automatic long-term memory should use a proposal workflow:
+Candidates that resemble credentials, API keys, passwords, tokens, or private keys are rejected.
+In the shipped `review` mode, all other candidates remain inactive proposals until the user
+approves or edits them. Rejection immediately removes proposal text. Pending text expires after 30
+days by default.
 
-1. the model identifies a candidate durable fact;
-2. policy checks namespace, sensitivity, source, and longevity;
-3. the user approves, rejects, or edits it—or a narrow allowlist handles low-risk facts;
-4. storage records provenance and approval mode;
-5. a review interface permits correction and deletion.
+In operator-selected `automatic` mode, safe candidates are sent directly to the configured
+provider. Stable, HMAC-protected identifiers scoped to the personal space suppress exact candidate
+duplicates across retries, chats, and eligible experiences. Content-free reference tombstones also
+prevent a forgotten or purged candidate from being silently resurrected by background capture.
+This path does not select a different provider or fall back to built-in storage when the configured
+provider is unavailable.
 
-Do not implement "save everything the model thinks is important." That creates privacy, staleness,
-prompt-injection, and retrieval-quality problems.
+Open the small management page at:
+
+```text
+http://<gateway-host>:<gateway-port>/memory
+```
+
+It exposes account settings, pending proposals, approved records and provenance, correction,
+forget, hard purge, export, and visible memory spaces. Cookie-authenticated mutations require a
+same-origin custom header to prevent form-based CSRF.
+
+## Lifecycle semantics
+
+- **Correct** replaces provider source content and repairs provider projections.
+- **Forget** hides a record from retrieval while retaining it for later export or correction.
+- **Hard purge** deletes provider source content and derived projections. Agent UI clears any
+  retained proposal text and keeps only an action, target reference, timestamp, and content-free
+  metadata in its audit table.
+- **Export** is an explicit user action and therefore contains memory content.
+
+Provider database WAL, MVCC history, replicas, and backups remain subject to that database's own
+retention policy. A provider purge cannot erase an already-created external backup.
+
+## Bridges
+
+Spaces are isolated unless both policy layers agree:
+
+1. the operator allowlists a source-kind to target-kind direction;
+2. the user selects the exact source and target spaces and consents on both sides.
+
+A bridge performs a separate, audited, read-only provider query. It never changes provider
+namespace permissions and never writes a retrieved record across the boundary. Removing either
+consent disables the bridge.
+
+## Game integration seam
+
+This release includes service-authenticated internal APIs to create a game space, ingest an
+idempotent structured event, and load scoped context. Game scopes map as:
+
+```text
+namespace → world/workspace → campaign/context → player/subject → session
+```
+
+No game UI or game repository is bundled. Integrators remain responsible for player identity,
+authorization, event schemas, and their own UX. This keeps the public foundation useful for other
+memory implementations without forcing users to adopt a particular continuity or game system.
+
+## Untrusted retrieval
+
+Retrieved content is labeled as untrusted reference data before it reaches a model. Stored text
+cannot grant tool permission, change an ACL, or bypass an approval gate. Do not store credentials
+or use memory as a source-of-truth database for security-sensitive state.

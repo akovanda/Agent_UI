@@ -51,6 +51,8 @@
         "llamaApiKey": {"type": "string"},
         "gatewayApiKey": {"type": "string"},
         "webuiSecretKey": {"type": "string"},
+        "memorySubjectHmacKey": {"type": "string"},
+        "continuityApiToken": {"type": "string"},
         "hermesApiKey": {"type": "string"}
       }
     },
@@ -105,6 +107,7 @@
     },
     "experiences": {"type": "object"},
     "hubProfiles": {"type": "object"},
+    "memoryConfig": {"type": "object"},
     "gateway": {
       "type": "object",
       "required": ["enabled", "replicaCount", "image", "service", "workers"],

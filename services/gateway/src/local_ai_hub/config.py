@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     llama_base_url: str = "http://llama:8080"
     llama_api_key: SecretStr = SecretStr("")
     gateway_api_key: SecretStr = SecretStr("local-development-key")
+    principal_api_keys_json: str = ""
     default_user_id: str = "local-user"
     profile_config_path: Path = Path("config/models/catalog.yaml")
     model_coordinator_mode: Literal["explicit", "autoload", "none"] = "explicit"
@@ -31,6 +32,8 @@ class Settings(BaseSettings):
     memory_required: bool = False
     memory_top_k: int = Field(default=6, ge=0, le=30)
     memory_max_chars: int = Field(default=6000, ge=0, le=50000)
+    memory_config_path: Path = Path("config/memory/base.yaml")
+    memory_config_overlay_path: Path | None = None
     cors_origins: str = (
         "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8001,http://127.0.0.1:8001"
     )

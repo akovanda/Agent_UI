@@ -1,0 +1,42 @@
+version: 1
+
+# Memory is provider-neutral. Operators can replace this provider in an ignored
+# local overlay without changing model catalogs or public project source.
+provider:
+  kind: builtin-postgres
+  namespace: personal
+  required: false
+
+# Automatic retrieval and post-response capture remain invisible and off until the
+# operator runs `hub memory enable`. Manual memory APIs remain available.
+automatic:
+  enabled: false
+  default_user_enabled: true
+  capture: true
+  # review keeps candidates inactive until user approval; automatic persists
+  # safe candidates immediately after a successful eligible response.
+  capture_mode: review
+  retrieval: true
+  capabilities: [chat, code, agent]
+  excluded_experiences: [story, storyteller]
+  extractor_experience: chat
+  max_candidates: 3
+  queue_size: 128
+
+personal:
+  context: assistant
+  subject_hmac_env: MEMORY_SUBJECT_HMAC_KEY
+
+retention:
+  pending_days: 30
+
+bridges:
+  enabled: false
+  operator_allowlist: []
+
+identity:
+  forwarded_jwt_header: X-OpenWebUI-User-Jwt
+  forwarded_jwt_secret_env: WEBUI_SECRET_KEY
+  browser_cookie_name: token
+  browser_cookie_secret_env: WEBUI_SECRET_KEY
+  allow_legacy_loopback_headers: false

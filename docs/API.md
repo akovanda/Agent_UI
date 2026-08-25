@@ -4,11 +4,16 @@ Agent UI exposes an authenticated OpenAI-compatible gateway plus read-only setup
 
 ## Authentication
 
-All routes except health and metrics require:
+All routes except health and metrics require a gateway or fixed-principal bearer key:
 
 ```http
 Authorization: Bearer <GATEWAY_API_KEY>
 ```
+
+Open WebUI model requests also include a signed `X-OpenWebUI-User-Jwt`. The gateway verifies that
+token before selecting a memory principal. Browser requests to `/memory` and `/api/memory/v1` may
+instead use Open WebUI's signed `token` cookie. Cookie-authenticated mutations require
+`X-Agent-UI-CSRF: 1`.
 
 ## OpenAI-compatible routes
 
@@ -32,12 +37,13 @@ Requests use either an experience ID such as `chat` or a directly registered mod
 | Header | Purpose |
 |---|---|
 | `X-Agent-UI-Experience` | Override the request's selected experience. |
-| `X-Agent-UI-User` | Stable user identity for memory isolation. |
-| `X-Agent-UI-Memory-Namespace` | Add one approved namespace to retrieval. |
+| `X-OpenWebUI-User-Jwt` | Signed, trusted Open WebUI principal for memory isolation. |
+| `X-OpenWebUI-Chat-Id` | Chat identifier; stored only as an HMAC for capture provenance. |
 | `X-Reasoning-Effort` | Select a declared model-specific effort mapping. |
 | `X-Request-ID` | Supply a request correlation ID. |
 
-The legacy `X-Local-AI-*` header names remain accepted during the v0.3 compatibility window.
+Unsigned user and memory-namespace headers do not grant memory access. Legacy user headers are
+available only when an operator explicitly enables loopback compatibility.
 
 Routing response headers:
 
@@ -141,6 +147,9 @@ Reloads the effective runtime file and reconstructs backend clients. Normal `./h
 
 ## Memory
 
+The legacy manual endpoints remain compatible, but the authenticated principal and server-owned
+personal space replace caller-selected user and namespace isolation:
+
 Create explicit memory:
 
 ```text
@@ -149,7 +158,6 @@ POST /api/memories
 
 ```json
 {
-  "user_id": "optional-override",
   "namespace": "projects",
   "content": "The deployment uses a private network.",
   "source": "operator",
@@ -164,7 +172,38 @@ Search:
 GET /api/memories/search?q=private+network&namespace=projects&limit=10
 ```
 
-Memory is isolated by user and namespace. Retrieved content is inserted as explicitly labeled untrusted reference material rather than privileged instructions.
+`user_id` cannot target another principal, and `namespace` is retained only as legacy provenance.
+
+The policy and lifecycle API is versioned under `/api/memory/v1`. Status reports the effective
+`automatic.capture_mode` (`review` or `automatic`):
+
+```text
+GET    /api/memory/v1/status
+PATCH  /api/memory/v1/settings
+GET    /api/memory/v1/spaces
+GET    /api/memory/v1/proposals?state=pending
+POST   /api/memory/v1/proposals/{id}/approve
+POST   /api/memory/v1/proposals/{id}/reject
+GET    /api/memory/v1/records
+PATCH  /api/memory/v1/records/{id}
+POST   /api/memory/v1/records/{id}/forget
+DELETE /api/memory/v1/records/{id}
+GET    /api/memory/v1/export
+POST   /api/memory/v1/import
+POST   /api/memory/v1/bridges
+```
+
+Service-principal integration seams are:
+
+```text
+POST /api/memory/v1/internal/spaces
+POST /api/memory/v1/internal/spaces/{id}/events
+POST /api/memory/v1/internal/context
+```
+
+Automatic behavior is off in the shipped configuration. See `docs/MEMORY.md` and `./hub memory
+show` for provider, identity, proposal, bridge, and lifecycle semantics. Retrieved content is
+inserted as explicitly labeled untrusted reference material rather than privileged instructions.
 
 ## Health and metrics
 

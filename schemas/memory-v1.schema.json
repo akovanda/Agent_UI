@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-ui.dev/schemas/memory-v1.schema.json",
+  "title": "Agent UI memory configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "provider", "automatic"],
+  "properties": {
+    "version": {"const": 1},
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["builtin-postgres", "continuity-http", "disabled"]},
+        "base_url": {"type": ["string", "null"]},
+        "token_env": {"type": "string"},
+        "namespace": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"},
+        "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 120}
+      }
+    },
+    "automatic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "default_user_enabled": {"type": "boolean"},
+        "capture": {"type": "boolean"},
+        "capture_mode": {"enum": ["review", "automatic"]},
+        "retrieval": {"type": "boolean"},
+        "capabilities": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "excluded_experiences": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "extractor_experience": {"type": "string", "minLength": 1},
+        "max_candidates": {"type": "integer", "minimum": 1, "maximum": 10},
+        "queue_size": {"type": "integer", "minimum": 1, "maximum": 10000}
+      }
+    },
+    "personal": {"type": "object"},
+    "retention": {"type": "object"},
+    "bridges": {"type": "object"},
+    "identity": {"type": "object"}
+  }
+}

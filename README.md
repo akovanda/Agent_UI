@@ -16,7 +16,9 @@ It does not prescribe a particular model family. Operators register resources de
 - Managed import/download as an option, not a requirement.
 - Generated Compose mount overrides and generated Helm values from the same catalog.
 - An AI-friendly CLI and JSON/YAML APIs for setup and inspection.
-- Shared PostgreSQL/pgvector memory with explicit user and namespace isolation.
+- Optional provider-neutral memory with signed identity, isolated spaces, review-first or
+  operator-selected automatic capture, correction/forget/purge/export, and a built-in PostgreSQL
+  fallback.
 - Optional story, agent, private web-search, and observability services.
 
 ## Architecture
@@ -114,9 +116,25 @@ Optional surfaces:
 the isolated Open Terminal scratch environment, browser-based code interpretation, memories,
 notes, tasks, calendar, and the existing PostgreSQL/pgvector knowledge retrieval.
 
+Agent UI's own automatic memory remains separately disabled until the operator opts in:
+
+```bash
+./hub memory show
+./hub memory enable
+./hub memory status
+```
+
+Once enabled, each account can opt out and manage records at the gateway's `/memory` page. The
+shipped mode queues proposals for review; an installation overlay can instead save safe candidates
+automatically. Model catalogs never contain private memory-provider settings. See
+[docs/MEMORY.md](docs/MEMORY.md).
+
 ## AI-first setup
 
 The preferred automation contract is a version-2 catalog overlay validated by [schemas/catalog-v2.schema.json](schemas/catalog-v2.schema.json).
+
+Memory uses a separate version-1 contract validated by
+[schemas/memory-v1.schema.json](schemas/memory-v1.schema.json); adopting it is optional.
 
 Plan without changing state:
 

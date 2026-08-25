@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -21,7 +20,30 @@ from .api_models import MemoryCreate, RoutePreview
 from .backends import BackendRuntimeRegistry
 from .config import ProfileDocument, Settings, load_profiles
 from .coordinator import ModelCoordinationError
+from .identity import IdentityError, PrincipalContext, authenticate_request
 from .memory import MemoryStore, NullMemoryStore, PostgresMemoryStore
+from .memory_api import router as memory_router
+from .memory_capture import (
+    CaptureQueue,
+    CaptureRequest,
+    Extractor,
+    extraction_messages,
+    parse_extraction_response,
+)
+from .memory_config import load_memory_config
+from .memory_provider import (
+    BuiltinPostgresProvider,
+    ContinuityHttpProvider,
+    DisabledMemoryProvider,
+    MemoryProvider,
+    MemoryProviderError,
+)
+from .memory_repository import (
+    InMemoryMemoryRepository,
+    MemoryRepository,
+    PostgresMemoryRepository,
+)
+from .memory_service import MemoryAccessError, MemoryConflictError, MemoryService
 from .observability import (
     CHAT_REQUESTS,
     HTTP_REQUESTS,
@@ -65,6 +87,8 @@ _ACCEPTED_CAPABILITIES = {
 class Runtime:
     backends: BackendRuntimeRegistry
     memory: MemoryStore
+    memory_service: MemoryService
+    capture: CaptureQueue
 
 
 def _openai_error(
@@ -76,24 +100,8 @@ def _openai_error(
     )
 
 
-def _record_to_dict(record: Any) -> dict[str, Any]:
-    data = asdict(record)
-    data["id"] = str(data["id"])
-    data["created_at"] = data["created_at"].isoformat()
-    data["updated_at"] = data["updated_at"].isoformat()
-    return data
-
-
 def _experience_header(request: Request) -> str | None:
     return request.headers.get("X-Agent-UI-Experience") or request.headers.get("X-Local-AI-Profile")
-
-
-def _user_header(request: Request, settings: Settings) -> str:
-    return (
-        request.headers.get("X-Agent-UI-User")
-        or request.headers.get("X-Local-AI-User")
-        or settings.default_user_id
-    )
 
 
 def _capability_supported(resolved: ResolvedProfile, operation: str) -> bool:
@@ -101,11 +109,50 @@ def _capability_supported(resolved: ResolvedProfile, operation: str) -> bool:
     return any(resolved.model.has_capability(item) for item in accepted)
 
 
+def _memory_capability(resolved: ResolvedProfile) -> str | None:
+    if resolved.profile.capability:
+        return resolved.profile.capability
+    if resolved.profile_id == resolved.backend_model:
+        return None
+    namespaces = set(resolved.profile.memory.namespaces)
+    if namespaces.intersection({"story", "campaign", "game"}):
+        return "story"
+    return "chat"
+
+
+def _latest_response_user_text(body: dict[str, Any]) -> str:
+    value = body.get("input")
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, list):
+        return ""
+    for item in reversed(value):
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if part.get("type") in {"input_text", "text"} and isinstance(text, str):
+                    parts.append(text)
+            return "\n".join(parts).strip()
+    return ""
+
+
 def create_app(
     settings: Settings | None = None,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
     memory_store: MemoryStore | None = None,
+    memory_provider: MemoryProvider | None = None,
+    memory_repository: MemoryRepository | None = None,
+    memory_transport: httpx.AsyncBaseTransport | None = None,
+    proposal_extractor: Extractor | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     logging.basicConfig(
@@ -114,11 +161,15 @@ def create_app(
     )
     document = load_profiles(settings.profile_config_path)
     registry = ProfileRegistry(document)
+    memory_config = load_memory_config(
+        settings.memory_config_path, settings.memory_config_overlay_path
+    )
 
     @asynccontextmanager
     async def lifespan(app_instance: FastAPI):
         store: MemoryStore = memory_store or NullMemoryStore()
-        if memory_store is None and settings.memory_enabled:
+        needs_builtin_store = memory_config.provider.kind == "builtin-postgres"
+        if memory_store is None and settings.memory_enabled and needs_builtin_store:
             if not settings.database_url:
                 message = "MEMORY_ENABLED is true but DATABASE_URL is not configured"
                 if settings.memory_required:
@@ -137,17 +188,89 @@ def create_app(
         else:
             await store.start()
 
-        app_instance.state.runtime = Runtime(
-            backends=BackendRuntimeRegistry.build(
-                settings,
-                app_instance.state.registry.document,
-                transport=transport,
-            ),
-            memory=store,
+        if memory_provider is not None:
+            provider = memory_provider
+        elif not settings.memory_enabled or memory_config.provider.kind == "disabled":
+            provider = DisabledMemoryProvider()
+        elif memory_config.provider.kind == "continuity-http":
+            provider = ContinuityHttpProvider(
+                memory_config.provider,
+                transport=memory_transport,
+            )
+        else:
+            provider = BuiltinPostgresProvider(store)
+
+        repository = memory_repository
+        if repository is None:
+            repository = (
+                PostgresMemoryRepository(settings.database_url)
+                if settings.database_url
+                else InMemoryMemoryRepository()
+            )
+        memory_service = MemoryService(
+            memory_config,
+            provider,
+            repository,
+            subject_hmac_fallback=settings.gateway_api_key.get_secret_value(),
         )
+        await memory_service.start()
+
+        backends = BackendRuntimeRegistry.build(
+            settings,
+            app_instance.state.registry.document,
+            transport=transport,
+        )
+
+        async def model_extract(user_text: str) -> list[dict[str, Any]]:
+            messages = extraction_messages(user_text)
+            current: ProfileRegistry = app_instance.state.registry
+            resolved = current.resolve(
+                memory_config.automatic.extractor_experience,
+                messages,
+                None,
+            )
+            payload = prepare_chat_payload(
+                {
+                    "model": memory_config.automatic.extractor_experience,
+                    "messages": messages,
+                    "stream": False,
+                    "temperature": 0.1,
+                    "max_tokens": 800,
+                },
+                resolved,
+                [],
+                0,
+                None,
+            )
+            backend = backends.get(resolved.backend_id)
+            async with backend.lease():
+                await backend.ensure_loaded(resolved.model.upstream_model or resolved.backend_model)
+                response = await backend.request("chat", payload, stream=False)
+                try:
+                    response.raise_for_status()
+                    value = response.json()
+                finally:
+                    await response.aclose()
+            choices = value.get("choices", []) if isinstance(value, dict) else []
+            if not choices or not isinstance(choices[0], dict):
+                return []
+            message = choices[0].get("message", {})
+            content = message.get("content", "") if isinstance(message, dict) else ""
+            return parse_extraction_response(content) if isinstance(content, str) else []
+
+        capture = CaptureQueue(memory_service, proposal_extractor or model_extract)
+        app_instance.state.runtime = Runtime(
+            backends=backends,
+            memory=store,
+            memory_service=memory_service,
+            capture=capture,
+        )
+        await capture.start()
         try:
             yield
         finally:
+            await capture.close()
+            await memory_service.close()
             await store.close()
             await app_instance.state.runtime.backends.close()
 
@@ -163,18 +286,35 @@ def create_app(
     application.state.settings = settings
     application.state.registry = registry
     application.state.transport = transport
+    application.state.memory_config = memory_config
+
+    @application.exception_handler(MemoryAccessError)
+    async def memory_access_error(_request: Request, exc: MemoryAccessError) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @application.exception_handler(MemoryConflictError)
+    async def memory_conflict_error(_request: Request, exc: MemoryConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @application.exception_handler(MemoryProviderError)
+    async def memory_provider_error(_request: Request, exc: MemoryProviderError) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=[
             "Authorization",
             "Content-Type",
             "X-Agent-UI-Experience",
             "X-Agent-UI-User",
             "X-Agent-UI-Memory-Namespace",
+            "X-Agent-UI-CSRF",
+            "X-Agent-UI-Chat-Id",
+            "X-OpenWebUI-User-Jwt",
+            "X-OpenWebUI-Chat-Id",
             "X-Local-AI-Profile",
             "X-Local-AI-User",
             "X-Local-AI-Memory-Namespace",
@@ -200,14 +340,19 @@ def create_app(
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         try:
             if request.method != "OPTIONS" and request.url.path not in _PUBLIC_PATHS:
-                expected = settings.gateway_api_key.get_secret_value()
-                provided = request.headers.get("Authorization", "")
-                if not provided.startswith("Bearer ") or not hmac.compare_digest(
-                    provided.removeprefix("Bearer "), expected
-                ):
-                    response = _openai_error(
-                        "invalid or missing API key", 401, "authentication_error"
+                browser_path = request.url.path == "/memory" or request.url.path.startswith(
+                    "/api/memory/v1"
+                )
+                try:
+                    principal = authenticate_request(
+                        request,
+                        settings,
+                        memory_config.identity,
+                        allow_browser_cookie=browser_path,
                     )
+                    request.state.principal = principal
+                except IdentityError as exc:
+                    response = _openai_error(str(exc), 401, "authentication_error")
                     status = response.status_code
                     response.headers["X-Request-ID"] = request_id
                     return response
@@ -246,7 +391,7 @@ def create_app(
             return JSONResponse(status_code=503, content={"status": "starting"})
         current: ProfileRegistry = request.app.state.registry
         configured_models = [model for model in current.document.models.values() if model.enabled]
-        checks: dict[str, Any] = {"memory": await runtime.memory.ping()}
+        checks: dict[str, Any] = {"memory": await runtime.memory_service.ping()}
         checks["backends"] = await runtime.backends.status()
         if not configured_models:
             return JSONResponse(
@@ -258,7 +403,8 @@ def create_app(
                 },
             )
         usable = any(model.backend in runtime.backends.runtimes for model in configured_models)
-        ready = usable and (bool(checks["memory"]) or not settings.memory_required)
+        memory_required = settings.memory_required or memory_config.provider.required
+        ready = usable and (bool(checks["memory"]) or not memory_required)
         status = "ok" if checks["memory"] else "degraded"
         return JSONResponse(
             status_code=200 if ready else 503,
@@ -282,6 +428,7 @@ def create_app(
             "version": 2,
             "setup_required": not bool(current.document.models),
             "backends": await runtime.backends.status(),
+            "memory": await runtime.memory_service.status(request.state.principal.principal_id),
             "models": {
                 model_id: {
                     "display_name": model.display_name or model_id,
@@ -362,17 +509,29 @@ def create_app(
     @application.post("/api/memories")
     async def create_memory(memory: MemoryCreate, request: Request) -> JSONResponse:
         runtime: Runtime = request.app.state.runtime
-        if not runtime.memory.enabled:
+        principal: PrincipalContext = request.state.principal
+        if not runtime.memory_service.provider.enabled:
             return JSONResponse(status_code=503, content={"error": "shared memory is disabled"})
-        record = await runtime.memory.add(
-            user_id=memory.user_id or _user_header(request, settings),
-            namespace=memory.namespace,
+        if memory.user_id and memory.user_id != principal.principal_id:
+            raise MemoryAccessError("a memory cannot be written for another principal")
+        record, reference = await runtime.memory_service.add_approved(
+            principal.principal_id,
             content=memory.content,
             source=memory.source,
-            metadata=memory.metadata,
+            metadata={**memory.metadata, "legacy_namespace": memory.namespace},
             importance=memory.importance,
         )
-        return JSONResponse(status_code=201, content=_record_to_dict(record))
+        return JSONResponse(
+            status_code=201,
+            content={
+                "id": str(reference.id),
+                "provider_record_id": record.id,
+                "content": record.content,
+                "source": record.source,
+                "metadata": record.metadata,
+                "importance": record.importance,
+            },
+        )
 
     @application.get("/api/memories/search")
     async def search_memories(
@@ -381,14 +540,25 @@ def create_app(
         namespace: list[str] | None = Query(default=None, max_length=100),
         limit: int = Query(default=10, ge=1, le=30),
     ) -> dict[str, Any]:
+        del namespace
         runtime: Runtime = request.app.state.runtime
-        records = await runtime.memory.search(
-            user_id=_user_header(request, settings),
-            namespaces=namespace or ["general", "user", "projects"],
-            query=q,
-            limit=limit,
+        principal: PrincipalContext = request.state.principal
+        records = await runtime.memory_service.manual_search(
+            principal.principal_id, query=q, limit=limit
         )
-        return {"data": [_record_to_dict(record) for record in records]}
+        return {
+            "data": [
+                {
+                    "id": record.id,
+                    "content": record.content,
+                    "source": record.source,
+                    "metadata": record.metadata,
+                    "importance": record.importance,
+                    "rank": record.rank,
+                }
+                for record in records
+            ]
+        }
 
     async def parse_body(request: Request) -> dict[str, Any] | JSONResponse:
         try:
@@ -439,25 +609,17 @@ def create_app(
             )
 
         runtime: Runtime = request.app.state.runtime
-        memories = []
-        if (
-            chat
-            and runtime.memory.enabled
-            and resolved.profile.memory.enabled
-            and settings.memory_top_k > 0
-        ):
-            namespaces = list(resolved.profile.memory.namespaces)
-            extra_namespace = request.headers.get(
-                "X-Agent-UI-Memory-Namespace"
-            ) or request.headers.get("X-Local-AI-Memory-Namespace")
-            if extra_namespace and extra_namespace not in namespaces:
-                namespaces.append(extra_namespace)
+        memories: list[Any] = []
+        memory_capability = _memory_capability(resolved)
+        if chat and settings.memory_top_k > 0:
+            principal: PrincipalContext = request.state.principal
             try:
-                memories = await runtime.memory.search(
-                    user_id=_user_header(request, settings),
-                    namespaces=namespaces,
+                memories = await runtime.memory_service.context(
+                    principal.principal_id,
                     query=latest_user_text(messages),
                     limit=settings.memory_top_k,
+                    experience=resolved.profile_id,
+                    capability=memory_capability,
                 )
                 MEMORY_RETRIEVALS.labels(
                     profile=resolved.profile_id,
@@ -504,6 +666,28 @@ def create_app(
             "infill",
         }
         stream_label = "true" if stream else "false"
+        capture_request: CaptureRequest | None = None
+        if chat or operation == "responses":
+            principal: PrincipalContext = request.state.principal
+            capture_request = CaptureRequest(
+                principal_id=principal.principal_id,
+                experience=resolved.profile_id,
+                capability=memory_capability,
+                user_text=(
+                    latest_user_text(messages) if chat else _latest_response_user_text(body)
+                ),
+                chat_id=request.headers.get("X-OpenWebUI-Chat-Id")
+                or request.headers.get("X-Agent-UI-Chat-Id"),
+            )
+
+        async def enqueue_capture() -> None:
+            if capture_request is None:
+                return
+            try:
+                await runtime.capture.enqueue(capture_request)
+            except Exception:
+                logger.exception("failed to enqueue memory proposal extraction")
+
         CHAT_REQUESTS.labels(
             profile=resolved.profile_id,
             backend=resolved.backend_model,
@@ -583,11 +767,15 @@ def create_app(
                 )
 
                 async def iterator():
+                    completed = False
                     try:
                         async for chunk in upstream_response.aiter_raw():
                             yield chunk
+                        completed = True
                     finally:
                         await cleanup_request()
+                        if completed:
+                            await enqueue_capture()
 
                 return StreamingResponse(
                     iterator(),
@@ -601,6 +789,7 @@ def create_app(
                 "content-type", "application/json"
             )
             await cleanup_request()
+            await enqueue_capture()
             return Response(content=content, status_code=status_code, headers=response_headers)
         except BaseException:
             await cleanup_request()
@@ -636,6 +825,7 @@ def create_app(
     async def images(request: Request) -> Response:
         return await proxy_operation(request, "image")
 
+    application.include_router(memory_router)
     return application
 
 
