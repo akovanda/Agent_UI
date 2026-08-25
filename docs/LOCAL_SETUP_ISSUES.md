@@ -552,6 +552,25 @@ friction.
   normalizes the upstream Host header. If generic backend header overrides are added, keep secrets
   out of catalog inspection and restrict which headers an operator may configure.
 
+### 31. A compact model selected calendar search instead of web search
+
+- Status: Local resolution applied; general tool-routing hardening remains open
+- Area: Open WebUI native function calling with a dense built-in tool catalog
+- Observed: With Web Search enabled, a Qwen 3.5 4B request that explicitly required web search
+  selected `search_calendar_events` instead of `search_web`. The original chat therefore returned
+  an unsupported answer with no sources. SearXNG was healthy and returned live results, and a
+  controlled native-function diagnostic reproduced the incorrect calendar tool call.
+- Impact: The Web Search control can visibly be on while a compact model invokes a similarly named
+  tool or performs no retrieval, making model tool-selection failure look like broken networking.
+- Current resolution: Same-ID, installation-local Open WebUI Workspace Model overrides set
+  `params.function_calling` to `legacy` and advertise web-search capability for the four desktop
+  Qwen reasoning profiles. Web retrieval now happens before Qwen inference whenever the chat's Web
+  Search feature is active. An end-to-end probe returned a sourced result containing
+  `https://www.legendsofthejedi.com/`; GPT-OSS and the public catalog remain unchanged.
+- Suggested follow-up: Add per-model built-in-tool allowlists or routing policy to installation
+  automation, and test tool-name collisions with compact models. Prefer evidence from emitted tool
+  calls and returned sources over self-reported claims that a model searched the web.
+
 ## Resolved during setup
 
 ### Local development extras omitted the CLI's `requests` dependency
