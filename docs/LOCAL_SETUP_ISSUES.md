@@ -531,6 +531,27 @@ friction.
   following and structured extraction for each provider-model pairing instead of assuming that
   nominally OpenAI-compatible runtimes implement `developer` roles identically.
 
+### 30. Tailnet-forwarded Ollama rejected its MagicDNS host name
+
+- Status: Local resolution applied; stable endpoint naming remains open
+- Area: Multi-host Ollama backends over Tailscale
+- Observed: The Windows desktop's Ollama server correctly listened only on loopback, so direct
+  tailnet requests timed out. A tailnet-only Tailscale Serve TCP forward made the endpoint private
+  and reachable, but requests addressed to the desktop's MagicDNS name returned HTTP 403. Controlled
+  Host-header probes showed that Ollama accepted the tailnet IP as `Host` and rejected the DNS name
+  even though both resolved to the same node and port.
+- Impact: A securely forwarded remote model can appear unhealthy when a friendly MagicDNS URL is
+  used, while changing to a literal tailnet IP works but couples ignored installation state to that
+  node address.
+- Current resolution: Desktop Tailscale Serve forwards TCP 11434 to Ollama loopback, and the ignored
+  local catalog registers the desktop backend by its tailnet IP. `qwen3.5:4b` is advertised as an
+  independent chat/code/agent/tool model with `none`, `low`, `medium`, and `high` reasoning values;
+  GPT-OSS remains the default. A gateway probe ran both backends concurrently with 2.889 seconds of
+  measured overlap, and both returned their expected completion.
+- Suggested follow-up: Prefer a stable tailnet service identity or a private reverse proxy that
+  normalizes the upstream Host header. If generic backend header overrides are added, keep secrets
+  out of catalog inspection and restrict which headers an operator may configure.
+
 ## Resolved during setup
 
 ### Local development extras omitted the CLI's `requests` dependency
