@@ -16,8 +16,9 @@ It does not prescribe a particular model family. Operators register resources de
 - Managed import/download as an option, not a requirement.
 - Generated Compose mount overrides and generated Helm values from the same catalog.
 - An AI-friendly CLI and JSON/YAML APIs for setup and inspection.
-- Optional provider-neutral memory with signed identity, isolated spaces, review-first proposals,
-  correction/forget/purge/export, and a built-in PostgreSQL fallback.
+- Optional provider-neutral memory with signed identity, isolated spaces, review-first or
+  operator-selected automatic capture, correction/forget/purge/export, and a built-in PostgreSQL
+  fallback.
 - Optional story, agent, private web-search, and observability services.
 
 ## Architecture
@@ -123,8 +124,9 @@ Agent UI's own automatic memory remains separately disabled until the operator o
 ./hub memory status
 ```
 
-Once enabled, each account can opt out or review proposals and approved records at the gateway's
-`/memory` page. Model catalogs never contain private memory-provider settings. See
+Once enabled, each account can opt out and manage records at the gateway's `/memory` page. The
+shipped mode queues proposals for review; an installation overlay can instead save safe candidates
+automatically. Model catalogs never contain private memory-provider settings. See
 [docs/MEMORY.md](docs/MEMORY.md).
 
 ## AI-first setup

@@ -50,8 +50,9 @@ necessary does not grant permission.
    default. Caller-selected username and namespace headers are not authorization inputs.
 8. **Single request lease.** The T4 is serialized by default. This protects availability and avoids
    model-transition races; it is not an authorization mechanism.
-9. **Review-first memory.** Automatic behavior is operator-opt-in, candidate memories are inactive
-   until user approval, likely secrets are rejected, and rejected/expired proposal text is purged.
+9. **Explicit memory policy.** Automatic behavior is operator-opt-in and review-first by default.
+   Operators may select direct automatic capture; likely secrets are rejected in both modes, and
+   rejected/expired proposal text is purged.
 10. **Explicit bridges.** Cross-space reads require an operator-allowlisted direction and exact
     source plus target consent. Bridges are read-only and audited.
 
@@ -154,6 +155,8 @@ For suspected compromise:
 - A forged user header or invalid forwarded JWT cannot select another user's memory.
 - Personal memory is shared by eligible assistant experiences but not returned to story/game
   contexts.
+- Review-first capture remains the default. If an operator selects automatic capture, the same
+  account opt-out, experience isolation, and probable-secret rejection controls still apply.
 - Hard purge removes provider source content and projections while retaining only content-free
   Agent UI audit metadata.
 - A malicious memory entry cannot directly trigger a tool action.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import math
 import os
 import re
 from dataclasses import asdict
@@ -331,6 +332,24 @@ class MemoryService:
     ) -> list[MemoryProposal]:
         target = await self.personal_space(principal_id)
         created: list[MemoryProposal] = []
+        for content, metadata, _normalized in self._safe_candidates(candidates):
+            created.append(
+                await self.repository.add_proposal(
+                    space_id=target.id,
+                    principal_id=principal_id,
+                    content=content,
+                    source_experience=experience,
+                    source_chat_hash=chat_hash,
+                    metadata=metadata,
+                    pending_days=self.config.retention.pending_days,
+                )
+            )
+        return created
+
+    def _safe_candidates(
+        self, candidates: list[dict[str, Any]]
+    ) -> list[tuple[str, dict[str, Any], str]]:
+        safe: list[tuple[str, dict[str, Any], str]] = []
         seen: set[str] = set()
         for candidate in candidates[: self.config.automatic.max_candidates]:
             content = candidate.get("content")
@@ -341,20 +360,61 @@ class MemoryService:
             if len(content) < 3 or normalized in seen or contains_probable_secret(content):
                 continue
             seen.add(normalized)
-            created.append(
-                await self.repository.add_proposal(
-                    space_id=target.id,
-                    principal_id=principal_id,
-                    content=content,
-                    source_experience=experience,
-                    source_chat_hash=chat_hash,
-                    metadata={
+            try:
+                importance = float(candidate.get("importance", 0.5))
+            except (TypeError, ValueError):
+                importance = 0.5
+            if not math.isfinite(importance):
+                importance = 0.5
+            safe.append(
+                (
+                    content,
+                    {
                         "kind": str(candidate.get("kind") or "fact"),
-                        "importance": max(0.0, min(float(candidate.get("importance", 0.5)), 1.0)),
+                        "importance": max(0.0, min(importance, 1.0)),
                     },
-                    pending_days=self.config.retention.pending_days,
+                    normalized,
                 )
             )
+        return safe
+
+    def _automatic_capture_id(self, *, space_id: UUID, normalized_content: str) -> str:
+        identity = "\0".join(("agent-ui-automatic-memory-v1", str(space_id), normalized_content))
+        digest = hmac.new(
+            self._subject_secret().encode(),
+            identity.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"automatic-v1:{digest}"
+
+    async def add_automatic_candidates(
+        self,
+        principal_id: str,
+        *,
+        candidates: list[dict[str, Any]],
+        experience: str,
+    ) -> list[MemoryRecordRef]:
+        target = await self.personal_space(principal_id)
+        created: list[MemoryRecordRef] = []
+        for content, metadata, normalized in self._safe_candidates(candidates):
+            external_id = self._automatic_capture_id(
+                space_id=target.id,
+                normalized_content=normalized,
+            )
+            # Retain the content-free reference as a tombstone after forget or
+            # purge so background retries cannot silently resurrect a memory.
+            if await self.repository.find_external_ref(principal_id, target.id, external_id):
+                continue
+            _record, reference = await self.add_approved(
+                principal_id,
+                content=content,
+                source="automatic-capture",
+                metadata={**metadata, "source_experience": experience},
+                importance=float(metadata["importance"]),
+                external_id=external_id,
+                space=target,
+            )
+            created.append(reference)
         return created
 
     async def proposals(self, principal_id: str, state: str = "pending") -> list[dict[str, Any]]:
@@ -711,6 +771,7 @@ class MemoryService:
             "automatic": {
                 "operator_enabled": self.config.automatic.enabled,
                 "capture": self.config.automatic.capture,
+                "capture_mode": self.config.automatic.capture_mode,
                 "retrieval": self.config.automatic.retrieval,
             },
             "user": asdict(settings),

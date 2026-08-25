@@ -42,7 +42,22 @@ Enable or disable automatic behavior:
 
 `enable` is the operator consent boundary. Once enabled, accounts default to enabled unless they
 opt out on the Memory page. Opting out stops capture and retrieval; it does not silently delete
-existing records.
+existing records. The shipped capture mode is `review`, so enabling automatic behavior queues
+inactive candidates and still requires user approval before storage.
+
+An operator who accepts the additional retention tradeoff can select immediate persistence in a
+version-1 local overlay:
+
+```yaml
+version: 1
+automatic:
+  capture_mode: automatic
+```
+
+This changes only what happens to safe extracted candidates after successful eligible responses.
+Account opt-out, provider availability, chat/code/agent eligibility, storyteller exclusion, and
+credential rejection still apply. `./hub memory show` and `/api/memory/v1/status` expose the
+effective capture mode.
 
 The base contract lives in `config/memory/base.yaml` and is validated separately from the model
 catalog. The local overlay is stored in the ignored Agent UI state volume. Provider tokens are
@@ -117,7 +132,7 @@ Approved personal records are stored above the session level, so `chat`, `code`,
 experiences can share them. `story` and game spaces are excluded by default. Direct model IDs do
 not automatically gain personal memory because they do not declare an experience boundary.
 
-## Review-first capture
+## Post-response capture
 
 After a successful non-streaming response, or after a stream finishes, Agent UI queues the latest
 user-authored text. It never sends system, assistant, or tool messages to the extractor. A
@@ -125,8 +140,16 @@ low-priority extraction request uses the configured experience and returns at mo
 schema-checked candidates.
 
 Candidates that resemble credentials, API keys, passwords, tokens, or private keys are rejected.
-All other candidates remain inactive proposals until the user approves or edits them. Rejection
-immediately removes proposal text. Pending text expires after 30 days by default.
+In the shipped `review` mode, all other candidates remain inactive proposals until the user
+approves or edits them. Rejection immediately removes proposal text. Pending text expires after 30
+days by default.
+
+In operator-selected `automatic` mode, safe candidates are sent directly to the configured
+provider. Stable, HMAC-protected identifiers scoped to the personal space suppress exact candidate
+duplicates across retries, chats, and eligible experiences. Content-free reference tombstones also
+prevent a forgotten or purged candidate from being silently resurrected by background capture.
+This path does not select a different provider or fall back to built-in storage when the configured
+provider is unavailable.
 
 Open the small management page at:
 

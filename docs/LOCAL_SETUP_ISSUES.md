@@ -493,6 +493,44 @@ friction.
 - Suggested follow-up: Introduce a small migration ledger and separate content-provider and
   governance migration directories before either schema gains a second non-idempotent migration.
 
+### 28. Review-only capture was invisible from the primary chat UI
+
+- Status: Resolved in this PR; automatic mode enabled only in ignored local installation state
+- Area: Post-response capture policy and Open WebUI workflow
+- Observed: The initial safe default extracted durable candidates into an inactive review queue,
+  but Open WebUI had no proposal notification. A user could state a clear preference in chat and
+  reasonably conclude that nothing happened unless they separately opened `/memory` and approved
+  it.
+- Impact: Mandatory review added friction to the intended personal workflow and made otherwise
+  functional capture look inert from the main UI.
+- Resolution: Version-1 memory configuration now supports an explicit `capture_mode` of `review`
+  or `automatic`. The public default remains `review`; this host selects `automatic` only in its
+  ignored overlay. Automatic mode retains account opt-out, experience isolation, credential
+  rejection, configured-provider-only writes, content-free audit, and HMAC-protected exact-candidate
+  deduplication across chats. The Memory page reports the effective behavior instead of always
+  claiming approval is required.
+- Suggested follow-up: Surface a small capture/status indicator inside Open WebUI so users can see
+  when background extraction saved, skipped, or rejected a candidate without opening `/memory`.
+
+### 29. Ollama GPT-OSS ignored developer-role extraction instructions
+
+- Status: Local catalog corrected; provider-compatibility validation remains open
+- Area: Instruction-role mapping for OpenAI-compatible backends
+- Observed: The automatic extractor returned HTTP 200 but produced conversational output instead
+  of its JSON candidate contract. An A/B request sent directly to this host's Ollama endpoint showed
+  that the same GPT-OSS model followed the extraction prompt as a `system` message but ignored it as
+  a `developer` message. The local catalog had explicitly selected the latter role.
+- Impact: Both review and automatic memory capture appeared inert even though chat and the
+  configured memory provider were healthy. Any other instruction-dependent feature could fail in
+  the same quiet way on a backend with different role semantics.
+- Current resolution: The ignored host-specific GPT-OSS catalog now selects `system` for all seven
+  GPT-OSS entries. After applying it, a main chat-route probe automatically captured two MUD
+  preferences, recalled the named MUD in a fresh request, created no proposals, and hard-purged the
+  isolated test records. The generic repository still leaves the role operator-configurable.
+- Suggested follow-up: Add a catalog/backend compatibility smoke test that validates instruction
+  following and structured extraction for each provider-model pairing instead of assuming that
+  nominally OpenAI-compatible runtimes implement `developer` roles identically.
+
 ## Resolved during setup
 
 ### Local development extras omitted the CLI's `requests` dependency

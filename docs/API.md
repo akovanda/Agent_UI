@@ -174,7 +174,8 @@ GET /api/memories/search?q=private+network&namespace=projects&limit=10
 
 `user_id` cannot target another principal, and `namespace` is retained only as legacy provenance.
 
-The review and lifecycle API is versioned under `/api/memory/v1`:
+The policy and lifecycle API is versioned under `/api/memory/v1`. Status reports the effective
+`automatic.capture_mode` (`review` or `automatic`):
 
 ```text
 GET    /api/memory/v1/status

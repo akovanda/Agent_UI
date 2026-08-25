@@ -23,7 +23,7 @@ MEMORY_PAGE = r"""<!doctype html>
   </style>
 </head>
 <body>
-  <header><div><h1>Memory</h1><div class="muted">Private, review-first memory for this account.</div></div>
+  <header><div><h1>Memory</h1><div class="muted">Private personal memory for this account.</div></div>
     <button onclick="refreshAll()">Refresh</button></header>
   <div id="notice" role="status"></div>
   <section><div class="row"><h2>Status</h2><span id="provider"></span></div>
@@ -42,6 +42,7 @@ MEMORY_PAGE = r"""<!doctype html>
 <script>
 const api = '/api/memory/v1';
 const recordsById = {};
+let captureMode = 'review';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function call(path, options={}) {
   options.headers = {'Content-Type':'application/json','X-Agent-UI-CSRF':'1',...(options.headers||{})};
@@ -52,10 +53,13 @@ async function call(path, options={}) {
 function notice(message, bad=false) { const n=document.querySelector('#notice'); n.textContent=message; n.className=bad?'danger':'healthy'; }
 async function loadStatus() {
   const value=await call('/status'); const p=value.provider;
+  captureMode=value.automatic.capture_mode||'review';
   document.querySelector('#provider').textContent=`${p.kind}: ${p.healthy?'healthy':'unavailable'}`;
   document.querySelector('#provider').className=p.healthy?'healthy':'unhealthy';
   document.querySelector('#operator').textContent=value.automatic.operator_enabled
-    ? 'Automatic memory is enabled by this operator. You remain in control.'
+    ? (captureMode==='automatic'
+      ? 'Automatic memory is enabled. Safe durable candidates are saved without review; you can still correct, forget, purge, or opt out.'
+      : 'Automatic extraction is enabled in review mode. Nothing is saved until you approve it.')
     : 'Automatic capture and retrieval are disabled by this operator.';
   const u=value.user;
   document.querySelector('#settings').innerHTML=['enabled','capture_enabled','retrieval_enabled'].map(k =>
@@ -71,7 +75,9 @@ async function loadProposals() {
   document.querySelector('#proposals').innerHTML=value.data.length?value.data.map(p=>`<div class="item"><pre>${esc(p.content)}</pre>
     <div class="muted">${esc(p.source_experience)} · expires ${esc(p.expires_at)}</div>
     <button onclick="approve('${p.id}')">Approve / edit</button> <button onclick="rejectProposal('${p.id}')">Reject</button></div>`).join(''):
-    '<p class="muted">No proposals are waiting. Nothing is remembered until you approve it.</p>';
+    (captureMode==='automatic'
+      ? '<p class="muted">No older review-mode proposals are waiting. New safe candidates are saved automatically.</p>'
+      : '<p class="muted">No proposals are waiting. Nothing is remembered until you approve it.</p>');
 }
 async function approve(id) { const content=prompt('Edit before approval, or keep as written:');
   await call(`/proposals/${id}/approve`,{method:'POST',body:JSON.stringify(content===null?{}:{content})}); notice('Memory approved.'); await refreshAll(); }
@@ -93,7 +99,7 @@ async function loadSpaces() { const value=await call('/spaces'); document.queryS
   `<div class="item"><strong>${esc(s.display_name)}</strong> <span class="muted">${esc(s.kind)} · ${esc(s.id)}</span></div>`).join(''); }
 async function exportMemory() { const value=await call('/export'); const blob=new Blob([JSON.stringify(value,null,2)],{type:'application/json'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='agent-ui-memory.json'; a.click(); URL.revokeObjectURL(a.href); }
-async function refreshAll() { try { await Promise.all([loadStatus(),loadProposals(),loadRecords(),loadSpaces()]); notice(''); } catch(e) { notice(e.message,true); } }
+async function refreshAll() { try { await loadStatus(); await Promise.all([loadProposals(),loadRecords(),loadSpaces()]); notice(''); } catch(e) { notice(e.message,true); } }
 refreshAll();
 </script>
 </body></html>"""

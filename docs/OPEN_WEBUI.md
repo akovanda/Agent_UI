@@ -158,8 +158,10 @@ OPEN_WEBUI_ENABLE_MEMORIES=false
 
 Agent UI automatic memory is also off until `./hub memory enable`; these are independent switches.
 Running both systems is possible, but duplicates and conflicting facts are harder to reason about.
-Agent UI uses review-first proposals and exposes them at the gateway `/memory` page. The browser can
-reuse Open WebUI's signed login cookie when the gateway is reached through the same host name.
+Agent UI ships with review-first proposals, while an operator can select automatic capture in a
+local memory overlay. Records, any pending proposals, and opt-out controls remain available at the
+gateway `/memory` page. The browser can reuse Open WebUI's signed login cookie when the gateway is
+reached through the same host name.
 
 ## Users
 

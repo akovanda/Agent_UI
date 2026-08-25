@@ -23,8 +23,10 @@ Agent UI owns a small, optional memory policy layer and a generic provider SPI.
   sessions are HMAC-pseudonymous.
 - Personal memory is shared by eligible chat/code/agent experiences and excluded from story/game
   scopes by default.
-- Post-response extraction uses only the latest user-authored text and creates inactive proposals.
-  Approval or edit is required before provider ingestion.
+- Post-response extraction uses only the latest user-authored text. The shipped `review` mode
+  creates inactive proposals and requires approval or edit before provider ingestion. A version-1
+  operator switch may instead persist safe candidates automatically, with the same account opt-out,
+  experience isolation, secret rejection, configured provider, and stable retry identifier.
 - Agent UI owns settings, spaces, memberships, proposals, provider references, bridge consent,
   jobs, and content-free lifecycle audit. Providers own memory content and retrieval projections.
 - Correction, soft forget, hard purge, and explicit export are mandatory for personal providers.

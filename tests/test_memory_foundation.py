@@ -71,6 +71,14 @@ def _wait_for_proposals(client: TestClient, headers: dict[str, str], count: int)
     raise AssertionError("proposal extraction did not finish")
 
 
+def _wait_for_extractions(calls: list[str], count: int) -> None:
+    for _ in range(100):
+        if len(calls) >= count:
+            return
+        time.sleep(0.01)
+    raise AssertionError("memory extraction did not finish")
+
+
 def test_signed_identity_isolates_users_and_unsigned_spoofing_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -191,6 +199,7 @@ def test_shipped_config_keeps_automatic_memory_off() -> None:
     assert chat.status_code == 200
     assert "Manual memory remains available" not in json.dumps(captured[0]["messages"])
     assert status.json()["automatic"]["operator_enabled"] is False
+    assert status.json()["automatic"]["capture_mode"] == "review"
     assert status.json()["user"]["enabled"] is False
 
 
@@ -319,6 +328,7 @@ def test_async_capture_review_lifecycle_and_secret_rejection(
         pending_after_secret = client.get("/api/memory/v1/proposals", headers=AUTH).json()["data"]
 
     assert response.status_code == 200
+    assert app.state.runtime.memory_service.config.automatic.capture_mode == "review"
     assert extracted_text[0] == "I prefer concise release notes."
     assert before.json()["data"] == []
     assert approved.status_code == 200
@@ -328,6 +338,104 @@ def test_async_capture_review_lifecycle_and_secret_rejection(
     assert after_purge.json()["data"] == []
     assert pending_after_secret == []
     repository = app.state.runtime.memory_service.repository
+    assert all("content" not in event["metadata"] for event in repository.audit_events)
+
+
+def test_automatic_capture_persists_safe_candidates_idempotently_but_excludes_story(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MEMORY_SUBJECT_HMAC_KEY", "subject-test-secret")
+    overlay = tmp_path / "automatic-capture.yaml"
+    overlay.write_text("automatic:\n  capture_mode: automatic\n", encoding="utf-8")
+    extracted_text: list[str] = []
+
+    async def extractor(user_text: str) -> list[dict]:
+        extracted_text.append(user_text)
+        if "credential" in user_text:
+            return [{"content": "api_key=sk_12345678901234567890", "importance": 1.0}]
+        return [{"content": "The user prefers concise release notes.", "importance": 0.8}]
+
+    memory = FakeMemoryStore()
+    app = create_app(
+        make_settings(
+            memory_config_path=Path("tests/fixtures/memory-capture.yaml"),
+            memory_config_overlay_path=overlay,
+        ),
+        transport=_model_transport(),
+        memory_store=memory,
+        proposal_extractor=extractor,
+    )
+    with TestClient(app) as client:
+        request = {
+            "model": "assistant",
+            "messages": [{"role": "user", "content": "I prefer concise release notes."}],
+        }
+        first = client.post(
+            "/v1/chat/completions",
+            headers={**AUTH, "X-OpenWebUI-Chat-Id": "chat-one"},
+            json=request,
+        )
+        retry = client.post(
+            "/v1/chat/completions",
+            headers={**AUTH, "X-OpenWebUI-Chat-Id": "chat-two"},
+            json=request,
+        )
+        secret = client.post(
+            "/v1/chat/completions",
+            headers=AUTH,
+            json={
+                "model": "assistant",
+                "messages": [{"role": "user", "content": "credential candidate"}],
+            },
+        )
+        story = client.post(
+            "/v1/chat/completions",
+            headers=AUTH,
+            json={
+                "model": "storyteller",
+                "messages": [{"role": "user", "content": "game-only fact"}],
+            },
+        )
+        _wait_for_extractions(extracted_text, 3)
+        records = client.get("/api/memory/v1/records", headers=AUTH).json()["data"]
+        proposals = client.get("/api/memory/v1/proposals", headers=AUTH).json()["data"]
+        status = client.get("/api/memory/v1/status", headers=AUTH).json()
+        purged = client.request(
+            "DELETE",
+            f"/api/memory/v1/records/{records[0]['id']}",
+            headers=AUTH,
+            json={"reason": "verify automatic capture tombstone"},
+        )
+        after_purge_retry = client.post(
+            "/v1/chat/completions",
+            headers={**AUTH, "X-OpenWebUI-Chat-Id": "chat-three"},
+            json=request,
+        )
+        _wait_for_extractions(extracted_text, 4)
+        records_after_purge_retry = client.get("/api/memory/v1/records", headers=AUTH).json()[
+            "data"
+        ]
+
+    assert all(response.status_code == 200 for response in (first, retry, secret, story))
+    assert extracted_text == [
+        "I prefer concise release notes.",
+        "I prefer concise release notes.",
+        "credential candidate",
+        "I prefer concise release notes.",
+    ]
+    assert len(records) == 1
+    assert records[0]["content"] == "The user prefers concise release notes."
+    assert records[0]["source"] == "automatic-capture"
+    assert proposals == []
+    assert status["automatic"]["capture_mode"] == "automatic"
+    assert purged.status_code == 200
+    assert after_purge_retry.status_code == 200
+    assert records_after_purge_retry == []
+    repository = app.state.runtime.memory_service.repository
+    assert [event["action"] for event in repository.audit_events] == [
+        "record.create",
+        "record.purge",
+    ]
     assert all("content" not in event["metadata"] for event in repository.audit_events)
 
 

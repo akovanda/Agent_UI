@@ -164,6 +164,14 @@ def test_memory_configuration_merge_and_validation(tmp_path: Path) -> None:
         load_memory_config(invalid)
     with pytest.raises(ValueError, match="base_url"):
         MemoryConfig.model_validate({"version": 1, "provider": {"kind": "continuity-http"}})
+    with pytest.raises(ValueError, match="capture_mode"):
+        MemoryConfig.model_validate(
+            {
+                "version": 1,
+                "provider": {"kind": "builtin-postgres"},
+                "automatic": {"capture_mode": "unreviewed"},
+            }
+        )
 
 
 def test_extraction_response_parser_accepts_only_structured_candidates() -> None:

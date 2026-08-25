@@ -33,6 +33,7 @@ class AutomaticMemoryConfig(BaseModel):
     enabled: bool = False
     default_user_enabled: bool = True
     capture: bool = True
+    capture_mode: Literal["review", "automatic"] = "review"
     retrieval: bool = True
     capabilities: list[str] = Field(default_factory=lambda: ["chat", "code", "agent"])
     excluded_experiences: list[str] = Field(default_factory=lambda: ["story", "storyteller"])
