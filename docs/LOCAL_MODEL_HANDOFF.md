@@ -33,6 +33,11 @@ Ollama `0.32.15` with the Vulkan backend. Both 128K aliases were loaded through 
 completion, and reported `context_length: 131072` from `/api/ps`. Approximate cold loads were 20
 seconds for 4B and 23-26 seconds for 9B. The spill into system RAM is expected on this GPU.
 
+Both Qwens are installed and independently selectable, but the desktop backend serializes requests
+and the 8 GB GPU will normally keep one of these large-context models resident at a time. Either
+desktop Qwen can run concurrently with GPT-OSS because GPT-OSS runs on `ucs`; concurrent probes of
+those two separate backends have succeeded.
+
 The original `qwen3.5:4b` and `qwen3.5:9b` tags remain untouched. They advertise a 256K model
 maximum but were observed loading with only a 4,096-token runtime context when no override was
 provided. The installation therefore uses derived Ollama aliases created from the original tags
