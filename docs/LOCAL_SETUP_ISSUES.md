@@ -552,6 +552,79 @@ friction.
   normalizes the upstream Host header. If generic backend header overrides are added, keep secrets
   out of catalog inspection and restrict which headers an operator may configure.
 
+### 31. A compact model selected calendar search instead of web search
+
+- Status: Local resolution applied; general tool-routing hardening remains open
+- Area: Open WebUI native function calling with a dense built-in tool catalog
+- Observed: With Web Search enabled, a Qwen 3.5 4B request that explicitly required web search
+  selected `search_calendar_events` instead of `search_web`. The original chat therefore returned
+  an unsupported answer with no sources. SearXNG was healthy and returned live results, and a
+  controlled native-function diagnostic reproduced the incorrect calendar tool call.
+- Impact: The Web Search control can visibly be on while a compact model invokes a similarly named
+  tool or performs no retrieval, making model tool-selection failure look like broken networking.
+- Current resolution: Same-ID, installation-local Open WebUI Workspace Model overrides set
+  `params.function_calling` to `legacy` and advertise web-search capability for all eight desktop
+  Qwen 3.5 4B/9B reasoning profiles. Web retrieval now happens before Qwen inference whenever the
+  chat's Web Search feature is active. An end-to-end 4B probe returned a sourced result containing
+  `https://www.legendsofthejedi.com/`; GPT-OSS and the public catalog remain unchanged.
+- Suggested follow-up: Add per-model built-in-tool allowlists or routing policy to installation
+  automation, and test tool-name collisions with compact models. Prefer evidence from emitted tool
+  calls and returned sources over self-reported claims that a model searched the web.
+
+### 32. Desktop Qwen model maximum was not the allocated runtime context
+
+- Status: Local resolution applied; operational benchmarking remains open
+- Area: Ollama model aliases and long-context deployment
+- Observed: Both desktop Qwen 3.5 models declared a 262,144-token context in model metadata, but
+  Ollama loaded the base tags with only 4,096 tokens when the request supplied no context override.
+  Treating the declared maximum as the active context would have silently truncated the MUD context
+  budget far below the intended 64K minimum.
+- Impact: Long chats, retrieved world state, and game continuity could be discarded even though the
+  selected model appeared to be a long-context model.
+- Current resolution: Non-destructive `qwen3.5:4b-128k` and `qwen3.5:9b-128k` aliases set
+  `num_ctx=131072`; the ignored local catalog selects those aliases. End-to-end gateway requests
+  returned `OK`, and Ollama `/api/ps` reported `context_length: 131072` for both. The 8 GB desktop
+  GPU partially spills these allocations into its 64 GB of system RAM, with observed cold loads of
+  roughly 20-26 seconds. The stable `story` experience now uses the 9B 128K model instead of the
+  4K-only Pygmalion model; the latter remains available for explicit comparison.
+- Suggested follow-up: Benchmark realistic 16K, 64K, and 128K MUD prompts for ingestion latency,
+  generation rate, memory pressure, and quality. Keep continuity retrieval selective rather than
+  filling the available window unconditionally.
+
+### 33. Qwen 3.5 accepted effort labels without providing graded reasoning
+
+- Status: Behavior documented; UI remains intentionally testable
+- Area: Ollama OpenAI compatibility and model-specific reasoning semantics
+- Observed: Ollama `0.32.15` accepted `none`, `low`, `medium`, `high`, and `max` for both desktop
+  Qwen 3.5 models. `none` disabled the reasoning trace, but every enabled label behaved alike. A
+  deterministic 4B probe produced byte-identical low/high traces, and a deterministic 9B probe
+  produced byte-identical low/medium/high traces with identical token counts.
+- Impact: A user can reliably force thinking off or on, but a High label suggests control over
+  reasoning depth that the current model/runtime pairing does not demonstrate. Thinking also uses
+  the completion-token budget and can consume it before visible content is emitted.
+- Current resolution: The local UI retains none/low/medium/high profiles for compatibility and
+  future retesting, while their descriptions explicitly warn that enabled labels may be
+  equivalent. `max` is not advertised because it produced no additional effect. GPT-OSS retains
+  its genuinely graded low/medium/high profiles.
+- Suggested follow-up: Add a model-specific binary-reasoning declaration or alias presentation so
+  clients can show `off/on` without weakening the gateway's generic value-mapping contract. Re-test
+  whenever Ollama or the Qwen templates change.
+
+### 34. Standalone validation rejected a valid merge overlay
+
+- Status: Workaround verified; CLI behavior remains open
+- Area: Catalog validation workflow
+- Observed: `./hub catalog validate .agent-ui/local-gpt-oss.yaml` rejected the installation overlay
+  because its disabled `local-llama` entry inherits `kind` from the base catalog. The command
+  validated the overlay as a complete catalog instead of applying merge semantics. The same file
+  passed `catalog plan`, applied successfully, and produced a healthy gateway.
+- Impact: An operator can mistake a valid installation overlay for broken configuration, or skip
+  validation entirely after learning that the standalone command gives a false negative.
+- Current workaround: Use merge-aware `catalog plan` before `catalog apply` for overlays.
+- Suggested follow-up: Add an explicit overlay-validation mode, make `validate` merge against the
+  base catalog by default for v2 overlays, or return guidance that distinguishes standalone
+  catalogs from merge overlays.
+
 ## Resolved during setup
 
 ### Local development extras omitted the CLI's `requests` dependency

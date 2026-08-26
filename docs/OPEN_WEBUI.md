@@ -59,6 +59,14 @@ For a fresh or upgraded checkout, initialize once and then start the profile:
 
 Re-running `./hub init` preserves existing ports and secrets unless a rotation flag is supplied; it adds the generated `SEARXNG_SECRET_KEY` required by the new profile. `--web-search` both starts SearXNG and recreates Open WebUI with `ENABLE_WEB_SEARCH=true`. Normal `./hub up` keeps the feature disabled.
 
+Native function calling presents `search_web` alongside the other enabled tools and relies on the
+selected model to choose correctly. Compact models can confuse similarly named tools in a large
+tool set even when Web Search is enabled. For a model that reproduces that behavior, set only that
+Open WebUI Workspace Model's `function_calling` parameter to `legacy`. Open WebUI will perform the
+enabled web retrieval before inference and pass the sourced context to the model. Keep the override
+model-specific, and verify the resulting answer contains web sources; do not infer successful
+retrieval merely because the model says that it searched.
+
 The shipped settings enable SearXNG's JSON response format, which Open WebUI requires. The query URL intentionally has no `?q=<query>` suffix: Open WebUI 0.11.0 appends the query and `format=json` parameters itself. Optional defaults are controlled in `.env`:
 
 ```text
